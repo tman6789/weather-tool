@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(py -3.13 -m weather_tool.cli:*)",
+      "Bash(py -3.13 -m pytest:*)"
+    ]
+  }
+}

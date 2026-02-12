@@ -1,0 +1,2 @@
+[console_scripts]
+weather-tool = weather_tool.cli:app

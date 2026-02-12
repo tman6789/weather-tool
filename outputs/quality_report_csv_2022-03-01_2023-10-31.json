@@ -1,0 +1,35 @@
+{
+  "station_id": "csv",
+  "window": "2022-03-01 to 2023-10-31",
+  "total_raw_records": 17520,
+  "total_windowed_records": 14640,
+  "interval": {
+    "dt_minutes": 60.0,
+    "p10": 60.0,
+    "p90": 60.0,
+    "interval_change_flag": false,
+    "unique_diff_counts": {
+      "60.0": 14639
+    }
+  },
+  "per_year": [
+    {
+      "year": 2022,
+      "missing_pct": 0.0,
+      "duplicate_count": 0,
+      "nan_temp_count": 15,
+      "interval_change_flag": false,
+      "partial_coverage_flag": true,
+      "coverage_pct": 0.838356
+    },
+    {
+      "year": 2023,
+      "missing_pct": 0.0,
+      "duplicate_count": 0,
+      "nan_temp_count": 15,
+      "interval_change_flag": false,
+      "partial_coverage_flag": true,
+      "coverage_pct": 0.832877
+    }
+  ]
+}
