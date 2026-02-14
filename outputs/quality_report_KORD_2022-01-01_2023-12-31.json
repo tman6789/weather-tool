@@ -1,0 +1,59 @@
+{
+  "station_id": "KORD",
+  "window": "2022-01-01 to 2023-12-31",
+  "total_raw_records": 17486,
+  "total_windowed_records": 17486,
+  "interval": {
+    "dt_minutes": 60.0,
+    "p10": 60.0,
+    "p90": 60.0,
+    "interval_change_flag": false,
+    "unique_diff_counts": {
+      "54.0": 1,
+      "57.0": 3,
+      "60.0": 17470,
+      "63.0": 3,
+      "66.0": 1,
+      "120.0": 6,
+      "300.0": 1
+    }
+  },
+  "per_year": [
+    {
+      "year": 2022,
+      "missing_pct": 0.001142,
+      "duplicate_count": 0,
+      "nan_temp_count": 0,
+      "interval_change_flag": false,
+      "partial_coverage_flag": false,
+      "coverage_pct": 1.0,
+      "nan_count_tmpf": 0,
+      "field_missing_pct_tmpf": 0.0,
+      "nan_count_dwpf": 0,
+      "field_missing_pct_dwpf": 0.0,
+      "nan_count_relh": 0,
+      "field_missing_pct_relh": 0.0,
+      "nan_count_wetbulb_f": 0,
+      "field_missing_pct_wetbulb_f": 0.0,
+      "wetbulb_availability_pct": 100.0
+    },
+    {
+      "year": 2023,
+      "missing_pct": 0.00274,
+      "duplicate_count": 0,
+      "nan_temp_count": 0,
+      "interval_change_flag": false,
+      "partial_coverage_flag": false,
+      "coverage_pct": 1.0,
+      "nan_count_tmpf": 0,
+      "field_missing_pct_tmpf": 0.0,
+      "nan_count_dwpf": 0,
+      "field_missing_pct_dwpf": 0.0,
+      "nan_count_relh": 0,
+      "field_missing_pct_relh": 0.0,
+      "nan_count_wetbulb_f": 0,
+      "field_missing_pct_wetbulb_f": 0.0,
+      "wetbulb_availability_pct": 100.0
+    }
+  ]
+}

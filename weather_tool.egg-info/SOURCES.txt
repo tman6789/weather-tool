@@ -1,8 +1,10 @@
 README.md
 pyproject.toml
 tests/test_hours_above.py
+tests/test_iem_url.py
 tests/test_interval.py
 tests/test_missing_pct.py
+tests/test_wetbulb.py
 tests/test_yearly_summary.py
 weather_tool/__init__.py
 weather_tool/cli.py
