@@ -15,6 +15,16 @@ PARTIAL_COVERAGE_THRESHOLD = 0.98  # coverage_pct below this → partial flag
 INTERVAL_CHANGE_RATIO = 0.20       # fraction of diffs that may deviate
 INTERVAL_CHANGE_TOL = 0.10         # fractional tolerance around median dt
 
+IEM_UNITS: dict[str, str] = {
+    "tmpf": "F",
+    "dwpf": "F",
+    "relh": "%",
+    "sknt": "kt",
+    "drct": "deg",
+    "gust": "kt",
+    "wetbulb_f": "F",
+}
+
 
 @dataclass
 class RunConfig:
@@ -29,6 +39,7 @@ class RunConfig:
 
     # IEM-mode fields
     station_id: str | None = None
+    fields: list[str] = field(default_factory=lambda: ["tmpf"])
 
     # Common fields
     start: date = field(default_factory=lambda: date(2020, 1, 1))

@@ -43,6 +43,41 @@ def trend_hours_above(summary: pd.DataFrame) -> dict[str, Any]:
     }
 
 
+def trend_wb_p99(summary: pd.DataFrame) -> dict[str, Any]:
+    """Simple linear regression of wb_p99 vs year.
+
+    Returns dict with slope, intercept, r_value, p_value, direction.
+    """
+    if "wb_p99" not in summary.columns:
+        return {
+            "slope": float("nan"),
+            "intercept": float("nan"),
+            "r_value": float("nan"),
+            "p_value": float("nan"),
+            "direction": "no data",
+        }
+    valid = summary.dropna(subset=["wb_p99"])
+    if len(valid) < 2:
+        return {
+            "slope": float("nan"),
+            "intercept": float("nan"),
+            "r_value": float("nan"),
+            "p_value": float("nan"),
+            "direction": "insufficient data",
+        }
+    x = valid["year"].astype(float).values
+    y = valid["wb_p99"].astype(float).values
+    result = stats.linregress(x, y)
+    direction = "increasing" if result.slope > 0 else ("decreasing" if result.slope < 0 else "flat")
+    return {
+        "slope": round(float(result.slope), 4),
+        "intercept": round(float(result.intercept), 2),
+        "r_value": round(float(result.rvalue), 4),
+        "p_value": round(float(result.pvalue), 6),
+        "direction": direction,
+    }
+
+
 def _fmt_table(df: pd.DataFrame, max_rows: int = 10) -> str:
     """Format a DataFrame as a markdown table (up to max_rows)."""
     subset = df.head(max_rows)
@@ -96,6 +131,34 @@ def generate_insights_md(
     lines.append(f"- R-value: {trend['r_value']}")
     lines.append(f"- p-value: {trend['p_value']}")
     lines.append("")
+
+    # ── Moisture / Tower Stress ──
+    if "wb_p99" in summary.columns and summary["wb_p99"].notna().any():
+        lines.append("## Moisture / Tower Stress")
+        lines.append("")
+
+        wb_top = top_n(summary, "wb_p99", 3)
+        lines.append("**Top 3 years by wb_p99 (99th percentile wet-bulb, °F):**")
+        for _, r in wb_top.iterrows():
+            lines.append(f"- **{int(r['year'])}**: wb_p99 = {r['wb_p99']} °F")
+        lines.append("")
+
+        wb_trend = trend_wb_p99(summary)
+        lines.append(f"**wb_p99 trend:** {wb_trend['direction']}  ")
+        lines.append(f"- Slope: {wb_trend['slope']} °F/year")
+        lines.append(f"- R-value: {wb_trend['r_value']}")
+        lines.append(f"- p-value: {wb_trend['p_value']}")
+        lines.append("")
+
+        if "wetbulb_availability_pct" in summary.columns:
+            low_wb = summary[summary["wetbulb_availability_pct"] < 80.0]
+            if not low_wb.empty:
+                lines.append("**Low wet-bulb availability years (<80%) — data quality warning:**")
+                for _, r in low_wb.iterrows():
+                    lines.append(
+                        f"- {int(r['year'])}: {r['wetbulb_availability_pct']:.1f}% availability"
+                    )
+                lines.append("")
 
     # ── Data quality notes ──
     lines.append("## Data Quality Notes")

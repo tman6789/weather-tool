@@ -10,7 +10,7 @@ import numpy as np
 import pandas as pd
 
 from weather_tool.config import PARTIAL_COVERAGE_THRESHOLD, RunConfig
-from weather_tool.core.metrics import hours_above_ref, infer_interval
+from weather_tool.core.metrics import hours_above_ref
 from weather_tool.core.quality import compute_quality
 
 
@@ -90,6 +90,25 @@ def build_yearly_summary(
         dedup = yr_df[~yr_df["_is_dup"]]
         hab = hours_above_ref(dedup["temp"], cfg.ref_temp, dt_minutes)
 
+        # Wet-bulb percentiles (only if wetbulb_f column present)
+        wb_row: dict[str, Any] = {}
+        if "wetbulb_f" in dedup.columns:
+            wb_valid = dedup["wetbulb_f"].dropna()
+            if len(wb_valid) > 0:
+                wb_row["wb_p99"] = round(float(np.percentile(wb_valid, 99)), 2)
+                wb_row["wb_p996"] = round(float(np.percentile(wb_valid, 99.6)), 2)
+                wb_row["wb_max"] = round(float(wb_valid.max()), 2)
+                wb_row["wb_mean"] = round(float(wb_valid.mean()), 2)
+                wb_row["hours_wb_above_ref"] = round(
+                    hours_above_ref(dedup["wetbulb_f"], cfg.ref_temp, dt_minutes), 2
+                )
+            else:
+                wb_row["wb_p99"] = None
+                wb_row["wb_p996"] = None
+                wb_row["wb_max"] = None
+                wb_row["wb_mean"] = None
+                wb_row["hours_wb_above_ref"] = 0.0
+
         cov = _coverage(yr, slice_start, slice_end)
         partial = cov < PARTIAL_COVERAGE_THRESHOLD
 
@@ -104,6 +123,7 @@ def build_yearly_summary(
                 "tmin": round(tmin, 2) if not np.isnan(tmin) else None,
                 "hours_above_ref": round(hab, 2),
                 "ref_temp": cfg.ref_temp,
+                **wb_row,
                 **quality,
                 "coverage_pct": round(cov, 6),
                 "partial_coverage_flag": partial,

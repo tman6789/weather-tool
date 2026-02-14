@@ -141,6 +141,118 @@ class TestYearlySummary:
         expected_hours = 72 * (20.0 / 60.0)  # = 24.0
         assert row["hours_above_ref"] == pytest.approx(expected_hours)
 
+    def test_wb_summary_columns_present_when_wetbulb_available(self):
+        """DataFrame with tmpf + relh columns → summary includes wb_p99, wb_p996, wb_max, wb_mean."""
+        periods = 8760
+        ts = pd.date_range("2023-01-01", periods=periods, freq="60min", tz="UTC")
+        temps_f = np.full(periods, 86.0)   # 30 °C
+        relh = np.full(periods, 50.0)      # 50 % RH → wb ≈ 72 °F
+
+        from weather_tool.core.metrics import compute_wetbulb_f
+        df = pd.DataFrame({
+            "timestamp": ts,
+            "tmpf": temps_f,
+            "temp": temps_f,
+            "relh": relh,
+            "station_id": "TEST",
+        })
+        df["wetbulb_f"] = compute_wetbulb_f(df)
+
+        cfg = RunConfig(
+            mode="iem",
+            station_id="TEST",
+            start=date(2023, 1, 1),
+            end=date(2023, 12, 31),
+            ref_temp=65.0,
+            units="agnostic",
+            tz="UTC",
+        )
+        normed = normalize_timestamps(df)
+        windowed = filter_window(normed, cfg.start, cfg.end)
+        from weather_tool.core.normalize import deduplicated
+        dedup = deduplicated(windowed)
+        interval = infer_interval(dedup["timestamp"])
+
+        summary = build_yearly_summary(windowed, cfg, interval)
+        assert len(summary) == 1
+        row = summary.iloc[0]
+
+        for col in ("wb_p99", "wb_p996", "wb_max", "wb_mean"):
+            assert col in summary.columns, f"Expected column {col!r} in summary"
+            assert row[col] is not None
+            assert not np.isnan(float(row[col]))
+
+        # wb values should be below dry-bulb (86 °F)
+        assert float(row["wb_p99"]) < 86.0
+        # wb_p99 ≈ wb_p996 ≈ wb_max when all values are identical
+        assert float(row["wb_p99"]) == pytest.approx(float(row["wb_max"]), abs=0.1)
+
+    def test_wb_summary_absent_when_no_wetbulb(self):
+        """DataFrame without wetbulb_f → no wb_ columns in summary."""
+        df = _build_dataset("2023-01-01", periods=8760, freq_minutes=60)
+        cfg = RunConfig(
+            mode="csv",
+            station_id="TEST",
+            start=date(2023, 1, 1),
+            end=date(2023, 12, 31),
+            ref_temp=80.0,
+            units="agnostic",
+            tz="UTC",
+        )
+        normed = normalize_timestamps(df)
+        windowed = filter_window(normed, cfg.start, cfg.end)
+        from weather_tool.core.normalize import deduplicated
+        dedup = deduplicated(windowed)
+        interval = infer_interval(dedup["timestamp"])
+
+        summary = build_yearly_summary(windowed, cfg, interval)
+        for col in ("wb_p99", "wb_p996", "wb_max", "wb_mean"):
+            assert col not in summary.columns
+
+    def test_field_quality_columns_in_summary(self):
+        """DataFrame with relh + wetbulb_f → quality cols appear in summary."""
+        periods = 100
+        ts = pd.date_range("2023-07-01", periods=periods, freq="60min", tz="UTC")
+        temps_f = np.full(periods, 86.0)
+        relh = np.full(periods, 50.0)
+        relh[0] = np.nan   # one missing relh
+
+        from weather_tool.core.metrics import compute_wetbulb_f
+        df = pd.DataFrame({
+            "timestamp": ts,
+            "tmpf": temps_f,
+            "temp": temps_f,
+            "relh": relh,
+            "station_id": "TEST",
+        })
+        df["wetbulb_f"] = compute_wetbulb_f(df)
+
+        cfg = RunConfig(
+            mode="iem",
+            station_id="TEST",
+            start=date(2023, 7, 1),
+            end=date(2023, 7, 31),
+            ref_temp=65.0,
+            units="agnostic",
+            tz="UTC",
+        )
+        normed = normalize_timestamps(df)
+        windowed = filter_window(normed, cfg.start, cfg.end)
+        from weather_tool.core.normalize import deduplicated
+        dedup = deduplicated(windowed)
+        interval = infer_interval(dedup["timestamp"])
+
+        summary = build_yearly_summary(windowed, cfg, interval)
+        row = summary.iloc[0]
+
+        assert "nan_count_relh" in summary.columns
+        assert "nan_count_wetbulb_f" in summary.columns
+        assert "wetbulb_availability_pct" in summary.columns
+        # One NaN in relh → nan_count_relh >= 1
+        assert int(row["nan_count_relh"]) >= 1
+        # wetbulb_availability_pct should be < 100 because one row has NaN wetbulb
+        assert float(row["wetbulb_availability_pct"]) < 100.0
+
     def test_nan_temps_not_in_hours(self):
         """NaN temps should not contribute to hours_above_ref."""
         periods = 10

@@ -8,9 +8,14 @@ from typing import Optional
 
 import typer
 
-from weather_tool.config import Mode, RunConfig, Units
+from weather_tool.config import IEM_UNITS, Mode, RunConfig, Units
 
 app = typer.Typer(name="weather-tool", help="Deterministic historical weather analysis tool.")
+
+
+@app.callback()
+def _callback() -> None:
+    """Deterministic historical weather analysis tool."""
 
 
 @app.command()
@@ -28,8 +33,10 @@ def run(
     outdir: Path = typer.Option(Path("outputs"), help="Output directory"),
     llm: bool = typer.Option(False, "--llm", help="Generate optional LLM narrative"),
     verbose: bool = typer.Option(False, "--verbose", help="Verbose output"),
+    fields: str = typer.Option("tmpf", "--fields", help="Comma-separated IEM fields to request (e.g. tmpf,dwpf,relh,sknt,drct,gust)"),
 ) -> None:
     """Run a weather analysis pipeline."""
+    fields_list = [f.strip() for f in fields.split(",") if f.strip()]
     cfg = RunConfig(
         mode=mode,
         input_path=input,
@@ -44,6 +51,7 @@ def run(
         outdir=outdir,
         use_llm=llm,
         verbose=verbose,
+        fields=fields_list,
     )
     cfg.validate()
 
@@ -84,6 +92,14 @@ def _execute(cfg: RunConfig) -> None:
     windowed = filter_window(normed, cfg.start, cfg.end, tz=cfg.tz)
     typer.echo(f"       {len(windowed)} records in analysis window.")
 
+    # Compute wet-bulb if the required columns are present
+    if any(c in windowed.columns for c in ("tmpf", "relh", "dwpf")):
+        from weather_tool.core.metrics import compute_wetbulb_f
+        windowed = windowed.copy()
+        windowed["wetbulb_f"] = compute_wetbulb_f(windowed)
+        wb_avail = windowed["wetbulb_f"].notna().sum()
+        typer.echo(f"       Wet-bulb computed: {wb_avail} non-NaN values.")
+
     # 3. Interval inference (on deduplicated data)
     typer.echo("[3/6] Inferring sampling interval...")
     dedup = deduplicated(windowed)
@@ -101,21 +117,33 @@ def _execute(cfg: RunConfig) -> None:
         typer.echo(summary.to_string(index=False))
 
     # 5. Build quality report + metadata
+    _base_quality_cols = [
+        "year", "missing_pct", "duplicate_count", "nan_temp_count",
+        "interval_change_flag", "partial_coverage_flag", "coverage_pct",
+    ]
+    # Include any per-field quality columns present in summary
+    _extra_quality_cols = [
+        c for c in summary.columns
+        if c.startswith("nan_count_") or c.startswith("field_missing_pct_")
+        or c == "wetbulb_availability_pct"
+    ]
+    _quality_cols = _base_quality_cols + _extra_quality_cols
     quality_report = {
         "station_id": cfg.station_id or "csv",
         "window": f"{cfg.start} to {cfg.end}",
         "total_raw_records": len(raw),
         "total_windowed_records": len(windowed),
         "interval": interval_info,
-        "per_year": summary[
-            ["year", "missing_pct", "duplicate_count", "nan_temp_count",
-             "interval_change_flag", "partial_coverage_flag", "coverage_pct"]
-        ].to_dict(orient="records"),
+        "per_year": summary[_quality_cols].to_dict(orient="records"),
     }
+    _units_meta: dict = {"temp": str(cfg.units)}
+    if cfg.mode == "iem":
+        _units_meta = {k: v for k, v in IEM_UNITS.items() if k in (cfg.fields + ["wetbulb_f"])}
     metadata = {
         "station_id": cfg.station_id or "csv",
         "source": cfg.mode,
-        "units": cfg.units,
+        "fields": cfg.fields,
+        "units": _units_meta,
         "ref_temp": cfg.ref_temp,
         "tz": cfg.tz,
         "window_start": str(cfg.start),

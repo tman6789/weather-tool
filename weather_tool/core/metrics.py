@@ -1,4 +1,4 @@
-"""Deterministic metric computations: interval inference, hours-above-ref."""
+"""Deterministic metric computations: interval inference, hours-above-ref, wet-bulb."""
 
 from __future__ import annotations
 
@@ -95,6 +95,84 @@ def hours_above_ref(temps: pd.Series, ref_temp: float, dt_minutes: float) -> flo
     valid = temps.dropna()
     count_above = int((valid > ref_temp).sum())
     return count_above * (dt_minutes / 60.0)
+
+
+# ── Wet-bulb temperature (Stull 2011 approximation) ──────────────────────
+
+def _stull_wetbulb_c(t_c: np.ndarray, rh: np.ndarray) -> np.ndarray:
+    """Stull (2011) wet-bulb approximation (vectorized).
+
+    Parameters
+    ----------
+    t_c : dry-bulb temperature in °C (numpy array, no NaNs)
+    rh  : relative humidity in % (numpy array, no NaNs)
+
+    Returns
+    -------
+    numpy array of wet-bulb temperature in °C
+
+    Reference: Stull, R. (2011). Wet-bulb temperature from relative humidity
+    and air temperature. J. Appl. Meteor. Climatol., 50, 2267–2269.
+    Accuracy: ±0.35 °C for T ∈ [−20, 50] °C, RH ∈ [5, 99] %.
+    """
+    return (
+        t_c * np.arctan(0.151977 * (rh + 8.313659) ** 0.5)
+        + np.arctan(t_c + rh)
+        - np.arctan(rh - 1.676331)
+        + 0.00391838 * rh ** 1.5 * np.arctan(0.023101 * rh)
+        - 4.686035
+    )
+
+
+def compute_wetbulb_f(df: pd.DataFrame) -> pd.Series:
+    """Compute wet-bulb temperature in °F using the Stull (2011) approximation.
+
+    Preferred path: uses ``tmpf`` (or ``temp``) + ``relh`` columns.
+    Fallback path:  derives RH from ``tmpf``/``temp`` + ``dwpf`` via Magnus
+                    approximation, then applies Stull.
+    Returns NaN for rows where required inputs are missing.
+
+    Parameters
+    ----------
+    df : DataFrame that may contain columns tmpf/temp, relh, dwpf.
+
+    Returns
+    -------
+    pd.Series of float64 (wetbulb_f), same index as *df*.
+    """
+    # --- dry-bulb in Fahrenheit ---
+    if "tmpf" in df.columns:
+        t_f = pd.to_numeric(df["tmpf"], errors="coerce")
+    elif "temp" in df.columns:
+        t_f = pd.to_numeric(df["temp"], errors="coerce")
+    else:
+        return pd.Series(np.nan, index=df.index, dtype="float64")
+
+    t_c = (t_f - 32.0) * 5.0 / 9.0
+
+    # --- relative humidity ---
+    if "relh" in df.columns:
+        rh = pd.to_numeric(df["relh"], errors="coerce")
+    elif "dwpf" in df.columns:
+        # Magnus approximation: RH = 100 · e_s(Td) / e_s(T)
+        td_f = pd.to_numeric(df["dwpf"], errors="coerce")
+        td_c = (td_f - 32.0) * 5.0 / 9.0
+        e_td = np.exp(17.625 * td_c / (243.04 + td_c))
+        e_t = np.exp(17.625 * t_c / (243.04 + t_c))
+        rh = 100.0 * e_td / e_t
+    else:
+        return pd.Series(np.nan, index=df.index, dtype="float64")
+
+    # --- compute Stull only where both inputs are valid ---
+    valid = ~(t_c.isna() | rh.isna())
+    twb_c = np.full(len(df), np.nan)
+    if valid.any():
+        twb_c[valid.values] = _stull_wetbulb_c(
+            t_c.values[valid.values], rh.values[valid.values]
+        )
+
+    twb_f = twb_c * 9.0 / 5.0 + 32.0
+    return pd.Series(twb_f, index=df.index, dtype="float64")
 
 
 # ── Expected records for a time window ───────────────────────────────────
