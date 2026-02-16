@@ -100,6 +100,44 @@ def aggregate_station_window(
     if "wb_p996" in summary.columns and summary["wb_p996"].notna().any():
         row["wb_p996_median"] = float(np.nanmedian(summary["wb_p996"].dropna().astype(float)))
 
+    # ── Economizer / tower aggregation ────────────────────────────────────────
+
+    # Airside econ — sum across years
+    if "air_econ_hours" in summary.columns:
+        row["air_econ_hours_sum"] = round(float(summary["air_econ_hours"].sum()), 2)
+
+    # WEC hours — NaN-safe sum (NaN if all years had no wetbulb)
+    if "wec_hours" in summary.columns:
+        valid_wec = summary["wec_hours"].dropna()
+        row["wec_hours_sum"] = round(float(valid_wec.sum()), 2) if len(valid_wec) > 0 else float("nan")
+
+    # Tower stress hours per threshold — sum across years
+    stress_cols = [c for c in summary.columns if c.startswith("tower_stress_hours_wb_gt_")]
+    for sc in stress_cols:
+        valid_sc = summary[sc].dropna()
+        row[f"{sc}_sum"] = round(float(valid_sc.sum()), 2) if len(valid_sc) > 0 else float("nan")
+
+    # Rolling wb maxima — max of yearly maxima
+    for max_col in ("wb_mean_24h_max", "wb_mean_72h_max"):
+        if max_col in summary.columns:
+            valid_v = summary[max_col].dropna()
+            row[f"{max_col}_max"] = float(valid_v.max()) if len(valid_v) > 0 else float("nan")
+
+    # LWT proxy — median across years
+    if "lwt_proxy_p99" in summary.columns:
+        valid_lwt = summary["lwt_proxy_p99"].dropna()
+        row["lwt_proxy_p99_median"] = (
+            float(np.nanmedian(valid_lwt)) if len(valid_lwt) > 0 else float("nan")
+        )
+
+    # Econ confidence flag
+    mpa_econ = row.get("timestamp_missing_pct_avg", float("nan"))
+    wba_econ = row.get("wetbulb_availability_pct_avg", float("nan"))
+    row["econ_confidence_flag"] = bool(
+        (not np.isnan(mpa_econ) and mpa_econ > MISSING_DATA_WARNING_THRESHOLD)
+        or (not np.isnan(wba_econ) and wba_econ < WETBULB_AVAIL_WARNING_THRESHOLD)
+    )
+
     # Quality warning flag
     mpa = row.get("timestamp_missing_pct_avg", float("nan"))
     wba = row.get("wetbulb_availability_pct_avg", float("nan"))

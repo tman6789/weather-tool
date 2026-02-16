@@ -11,7 +11,13 @@ import math
 import numpy as np
 import pandas as pd
 
-from weather_tool.config import FREEZE_THRESHOLD_F, PARTIAL_COVERAGE_THRESHOLD, RunConfig
+from weather_tool.config import (
+    FREEZE_THRESHOLD_F,
+    PARTIAL_COVERAGE_THRESHOLD,
+    ROLLING_COMPLETENESS_MIN_FRAC,
+    RunConfig,
+)
+from weather_tool.core.econ_tower import compute_econ_tower_yearly
 from weather_tool.core.metrics import hours_above_ref
 from weather_tool.core.quality import compute_quality
 
@@ -136,6 +142,18 @@ def build_yearly_summary(
                 wb_row["wb_mean"] = None
                 wb_row["hours_wb_above_ref"] = 0.0
 
+        # Economizer / tower metrics
+        econ_row = compute_econ_tower_yearly(
+            dedup=dedup,
+            dt_minutes=dt_minutes,
+            air_econ_threshold_f=cfg.air_econ_threshold_f,
+            chw_supply_f=cfg.chw_supply_f,
+            tower_approach_f=cfg.tower_approach_f,
+            hx_approach_f=cfg.hx_approach_f,
+            wb_stress_thresholds=cfg.wb_stress_thresholds_f,
+            min_completeness_frac=ROLLING_COMPLETENESS_MIN_FRAC,
+        )
+
         cov = _coverage(yr, slice_start, slice_end)
         partial = cov < PARTIAL_COVERAGE_THRESHOLD
 
@@ -155,6 +173,7 @@ def build_yearly_summary(
                 "hours_below_32": round(freeze_hrs, 2),
                 "ref_temp": cfg.ref_temp,
                 **wb_row,
+                **econ_row,
                 **quality,
                 "coverage_pct": round(cov, 6),
                 "partial_coverage_flag": partial,

@@ -26,6 +26,15 @@ SCORE_WEIGHTS: dict[str, float] = {
 HEAT_SCORE_WEIGHTS: dict[str, float] = {"hours_above_ref": 0.60, "t_p99": 0.40}
 FREEZE_SCORE_WEIGHTS: dict[str, float] = {"freeze_hours": 0.70, "tmin_min": 0.30}
 
+# Economizer / Tower defaults
+AIR_ECON_THRESHOLD_F: float = 55.0
+TOWER_APPROACH_F: float = 7.0
+HX_APPROACH_F: float = 5.0          # heat-exchanger approach delta (WEC proxy)
+# TOWER_RANGE_F = 10.0              # reserved for future use — not wired into any metric yet
+CHW_SUPPLY_F: float = 44.0
+WB_STRESS_THRESHOLDS_F: list[float] = [75.0, 78.0, 80.0]
+ROLLING_COMPLETENESS_MIN_FRAC: float = 0.80
+
 IEM_UNITS: dict[str, str] = {
     "tmpf": "F",
     "dwpf": "F",
@@ -61,6 +70,14 @@ class RunConfig:
     outdir: Path = Path("outputs")
     use_llm: bool = False
     verbose: bool = False
+
+    # Economizer / tower params
+    air_econ_threshold_f: float = 55.0
+    tower_approach_f: float = 7.0
+    hx_approach_f: float = 5.0          # heat-exchanger approach for WEC proxy
+    # tower_range_f: float = 10.0       # reserved — not yet used in any metric
+    chw_supply_f: float = 44.0
+    wb_stress_thresholds_f: list[float] = field(default_factory=lambda: [75.0, 78.0, 80.0])
 
     def validate(self) -> None:
         """Raise ValueError on invalid config combinations."""

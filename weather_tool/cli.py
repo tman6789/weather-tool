@@ -34,9 +34,15 @@ def run(
     llm: bool = typer.Option(False, "--llm", help="Generate optional LLM narrative"),
     verbose: bool = typer.Option(False, "--verbose", help="Verbose output"),
     fields: str = typer.Option("tmpf", "--fields", help="Comma-separated IEM fields to request (e.g. tmpf,dwpf,relh,sknt,drct,gust)"),
+    air_econ_threshold_f: float = typer.Option(55.0, "--air-econ-threshold-f", help="Dry-bulb threshold (°F) for airside economizer hours (Tdb <= this)."),
+    tower_approach_f: float = typer.Option(7.0, "--tower-approach-f", help="Cooling tower approach temperature (°F)."),
+    hx_approach_f: float = typer.Option(5.0, "--hx-approach-f", help="Heat-exchanger approach delta (°F) for WEC proxy (required_twb_max = chw_supply - tower_approach - hx_approach)."),
+    chw_supply_f: float = typer.Option(44.0, "--chw-supply-f", help="Chilled water supply temperature (°F) for WEC proxy."),
+    wb_stress_thresholds: str = typer.Option("75,78,80", "--wetbulb-stress-thresholds-f", help="Comma-separated wet-bulb thresholds (°F) for tower stress hours."),
 ) -> None:
     """Run a weather analysis pipeline."""
     fields_list = [f.strip() for f in fields.split(",") if f.strip()]
+    wb_stress_list = [float(t.strip()) for t in wb_stress_thresholds.split(",") if t.strip()]
     cfg = RunConfig(
         mode=mode,
         input_path=input,
@@ -52,6 +58,11 @@ def run(
         use_llm=llm,
         verbose=verbose,
         fields=fields_list,
+        air_econ_threshold_f=air_econ_threshold_f,
+        tower_approach_f=tower_approach_f,
+        hx_approach_f=hx_approach_f,
+        chw_supply_f=chw_supply_f,
+        wb_stress_thresholds_f=wb_stress_list,
     )
     cfg.validate()
 
@@ -128,6 +139,11 @@ def compare(
     tz: str = typer.Option("UTC", "--tz", help="IANA timezone for timestamps"),
     outdir: Path = typer.Option(Path("outputs"), help="Output directory"),
     verbose: bool = typer.Option(False, "--verbose", help="Verbose output"),
+    air_econ_threshold_f: float = typer.Option(55.0, "--air-econ-threshold-f", help="Dry-bulb threshold (°F) for airside economizer hours (Tdb <= this)."),
+    tower_approach_f: float = typer.Option(7.0, "--tower-approach-f", help="Cooling tower approach temperature (°F)."),
+    hx_approach_f: float = typer.Option(5.0, "--hx-approach-f", help="Heat-exchanger approach delta (°F) for WEC proxy."),
+    chw_supply_f: float = typer.Option(44.0, "--chw-supply-f", help="Chilled water supply temperature (°F) for WEC proxy."),
+    wb_stress_thresholds: str = typer.Option("75,78,80", "--wetbulb-stress-thresholds-f", help="Comma-separated wet-bulb thresholds (°F) for tower stress hours."),
 ) -> None:
     """Compare climate metrics across multiple stations."""
     from weather_tool.core.compare import build_compare_summary
@@ -137,6 +153,7 @@ def compare(
 
     ref_temps_list = [float(t.strip()) for t in ref_temps.split(",") if t.strip()]
     fields_list = [f.strip() for f in fields.split(",") if f.strip()]
+    wb_stress_list = [float(t.strip()) for t in wb_stress_thresholds.split(",") if t.strip()]
     start_date = date.fromisoformat(start)
     end_date = date.fromisoformat(end)
 
@@ -157,6 +174,11 @@ def compare(
             tz=tz,
             outdir=outdir,
             verbose=verbose,
+            air_econ_threshold_f=air_econ_threshold_f,
+            tower_approach_f=tower_approach_f,
+            hx_approach_f=hx_approach_f,
+            chw_supply_f=chw_supply_f,
+            wb_stress_thresholds_f=wb_stress_list,
         )
         cfg.validate()
         result = run_station_pipeline(cfg, echo=verbose)

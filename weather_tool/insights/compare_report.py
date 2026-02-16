@@ -128,14 +128,56 @@ def generate_compare_report_md(
 
     lines.append("")
 
+    # ── Economizer / Tower Rankings ───────────────────────────────────────────
+    econ_specs: list[tuple[str, str]] = []
+    if "air_econ_hours_sum" in compare_df.columns:
+        econ_specs.append(("air_econ_hours_sum", "Airside Economizer Hours (descending = more econ potential)"))
+    if "wec_hours_sum" in compare_df.columns:
+        econ_specs.append(("wec_hours_sum", "Waterside Econ Proxy Hours (descending = more WEC potential)"))
+    for sc in sorted([c for c in compare_df.columns if c.startswith("tower_stress_hours_wb_gt_") and c.endswith("_sum")]):
+        thr = sc.replace("tower_stress_hours_wb_gt_", "").replace("_sum", "")
+        econ_specs.append((sc, f"Tower Stress Twb ≥ {thr} °F (descending = more stress)"))
+    if "wb_mean_72h_max_max" in compare_df.columns:
+        econ_specs.append(("wb_mean_72h_max_max", "Worst 72h Sustained Twb °F (descending)"))
+    if "lwt_proxy_p99_median" in compare_df.columns:
+        econ_specs.append(("lwt_proxy_p99_median", "LWT Proxy p99 °F (descending = higher condenser water temp)"))
+
+    if econ_specs:
+        lines += ["## Economizer / Tower Rankings", ""]
+        for col, label in econ_specs:
+            if compare_df[col].isna().all():
+                continue
+            lines += [f"### {label}", ""]
+            ranked = (
+                compare_df[["station_id", col]]
+                .sort_values(col, ascending=False)
+                .reset_index(drop=True)
+            )
+            for i, (_, r) in enumerate(ranked.iterrows(), 1):
+                val = r[col]
+                val_str = f"{float(val):.1f}" if not pd.isna(val) else "N/A (wetbulb unavailable)"
+                lines.append(f"{i}. **{r['station_id']}** — {val_str}")
+            lines.append("")
+
+        if "econ_confidence_flag" in compare_df.columns and compare_df["econ_confidence_flag"].any():
+            lines += ["**Low-confidence econ/tower metrics (missing data or low wet-bulb availability):**", ""]
+            for _, r in compare_df[compare_df["econ_confidence_flag"]].iterrows():
+                lines.append(f"- **{r['station_id']}**")
+            lines.append("")
+
     # ── Full comparison table ─────────────────────────────────────────────────
     lines += ["## Comparison Table", ""]
     # Show a curated subset of columns for readability
+    econ_display = [
+        c for c in compare_df.columns
+        if c in ("air_econ_hours_sum", "wec_hours_sum", "wb_mean_72h_max_max", "lwt_proxy_p99_median")
+    ]
     display_cols = [c for c in [
         "station_id", "years_covered_count", "tmax_max", "tmin_min",
         "t_p99_median", "wb_p99_median",
         *[c for c in compare_df.columns if c.startswith("hours_above_ref_") and c.endswith("_sum")],
         "freeze_hours_sum",
+        *econ_display,
         "heat_score", "moisture_score", "freeze_score", "data_quality_score", "overall_score",
         "coverage_weighted_pct", "timestamp_missing_pct_avg", "missing_data_warning",
     ] if c in compare_df.columns]

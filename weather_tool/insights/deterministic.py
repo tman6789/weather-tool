@@ -160,6 +160,69 @@ def generate_insights_md(
                     )
                 lines.append("")
 
+    # ── Economizer / Tower Decision ──
+    lines.append("## Economizer / Tower Decision")
+    lines.append("")
+    lines.append(
+        f"> *Proxy metrics only. Air econ threshold: {cfg.air_econ_threshold_f} °F. "
+        f"WEC proxy: Twb ≤ {cfg.chw_supply_f - cfg.tower_approach_f - cfg.hx_approach_f:.1f} °F "
+        f"(CHW supply {cfg.chw_supply_f} − tower approach {cfg.tower_approach_f} − "
+        f"HX approach {cfg.hx_approach_f} °F). "
+        f"LWT proxy = Twb + tower approach (not a full simulation).*"
+    )
+    lines.append("")
+
+    if "air_econ_hours" in summary.columns:
+        air_total = float(summary["air_econ_hours"].sum())
+        top_ae = summary.nlargest(3, "air_econ_hours")
+        lines.append(f"**Airside econ (Tdb ≤ {cfg.air_econ_threshold_f} °F):** {air_total:.0f} hrs total")
+        for _, r in top_ae.iterrows():
+            lines.append(f"- **{int(r['year'])}**: {r['air_econ_hours']:.0f} hrs")
+        lines.append("")
+
+    if "wec_hours" in summary.columns and summary["wec_hours"].notna().any():
+        req_twb = float(summary["required_twb_max"].iloc[0])
+        wec_total = float(summary["wec_hours"].dropna().sum())
+        top_wec = summary.dropna(subset=["wec_hours"]).nlargest(3, "wec_hours")
+        lines.append(f"**WEC proxy (Twb ≤ {req_twb:.1f} °F):** {wec_total:.0f} hrs total")
+        for _, r in top_wec.iterrows():
+            feas = r.get("wec_feasibility_pct")
+            pct = f" ({feas*100:.1f}%)" if pd.notna(feas) else ""
+            lines.append(f"- **{int(r['year'])}**: {r['wec_hours']:.0f} hrs{pct}")
+        lines.append("")
+    elif "wec_hours" in summary.columns:
+        lines.append("**WEC proxy:** _wet-bulb data unavailable — metric not computed._")
+        lines.append("")
+
+    stress_cols = sorted([c for c in summary.columns if c.startswith("tower_stress_hours_wb_gt_")])
+    if stress_cols and summary[stress_cols[0]].notna().any():
+        lines.append("**Tower stress (Twb ≥ threshold):**")
+        for sc in stress_cols:
+            thr = sc.replace("tower_stress_hours_wb_gt_", "")
+            total = float(summary[sc].dropna().sum())
+            lines.append(f"- Twb ≥ {thr} °F: {total:.0f} hrs total")
+        lines.append("")
+
+    if "wb_mean_72h_max" in summary.columns and summary["wb_mean_72h_max"].notna().any():
+        max72 = float(summary["wb_mean_72h_max"].dropna().max())
+        worst_yr = int(summary.loc[summary["wb_mean_72h_max"].idxmax(), "year"])
+        lines.append(f"**Worst 72h sustained Twb:** {max72:.1f} °F (year {worst_yr})")
+        lines.append("")
+
+    if "lwt_proxy_p99" in summary.columns and summary["lwt_proxy_p99"].notna().any():
+        lwt_p99 = float(summary["lwt_proxy_p99"].dropna().max())
+        lwt_max_val = (
+            float(summary["lwt_proxy_max"].dropna().max())
+            if "lwt_proxy_max" in summary.columns and summary["lwt_proxy_max"].notna().any()
+            else float("nan")
+        )
+        lwt_max_str = f"{lwt_max_val:.1f} °F" if not pd.isna(lwt_max_val) else "N/A"
+        lines.append(
+            f"**LWT proxy (Twb + approach):** p99 = {lwt_p99:.1f} °F, max = {lwt_max_str}"
+            f"  *(proxy — actual LWT depends on tower specs)*"
+        )
+        lines.append("")
+
     # ── Data quality notes ──
     lines.append("## Data Quality Notes")
     lines.append("")
