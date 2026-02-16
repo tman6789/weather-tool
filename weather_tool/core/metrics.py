@@ -159,7 +159,7 @@ def compute_wetbulb_f(df: pd.DataFrame) -> pd.Series:
         td_c = (td_f - 32.0) * 5.0 / 9.0
         e_td = np.exp(17.625 * td_c / (243.04 + td_c))
         e_t = np.exp(17.625 * t_c / (243.04 + t_c))
-        rh = 100.0 * e_td / e_t
+        rh = (100.0 * e_td / e_t).clip(0.0, 100.0)  # clamp: dew point > dry-bulb is unphysical
     else:
         return pd.Series(np.nan, index=df.index, dtype="float64")
 
@@ -172,6 +172,8 @@ def compute_wetbulb_f(df: pd.DataFrame) -> pd.Series:
         )
 
     twb_f = twb_c * 9.0 / 5.0 + 32.0
+    # Physics constraint: wet-bulb ≤ dry-bulb (Stull can overshoot at extreme RH)
+    twb_f = np.minimum(twb_f, np.asarray(t_f, dtype=float))
     return pd.Series(twb_f, index=df.index, dtype="float64")
 
 

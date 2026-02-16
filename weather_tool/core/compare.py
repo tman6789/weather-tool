@@ -1,0 +1,230 @@
+"""Window-aggregation and scoring for multi-station climate comparison."""
+
+from __future__ import annotations
+
+from typing import TYPE_CHECKING, Any
+
+import numpy as np
+import pandas as pd
+
+from weather_tool.config import (
+    FREEZE_THRESHOLD_F,
+    FREEZE_SCORE_WEIGHTS,
+    HEAT_SCORE_WEIGHTS,
+    MISSING_DATA_WARNING_THRESHOLD,
+    SCORE_WEIGHTS,
+    WETBULB_AVAIL_WARNING_THRESHOLD,
+)
+from weather_tool.core.metrics import hours_above_ref
+
+if TYPE_CHECKING:
+    from weather_tool.pipeline import StationResult
+
+
+def aggregate_station_window(
+    summary: pd.DataFrame,
+    windowed: pd.DataFrame,
+    interval_info: dict[str, Any],
+    ref_temps: list[float],
+    station_id: str,
+) -> dict[str, Any]:
+    """Compute all window-aggregated metrics for one station.
+
+    Parameters
+    ----------
+    summary : yearly summary DataFrame from build_yearly_summary
+    windowed : normalized, window-filtered time series (with _is_dup column)
+    interval_info : dict from infer_interval
+    ref_temps : list of reference temperature thresholds
+    station_id : identifier string
+
+    Returns
+    -------
+    dict with all window-aggregated metrics for this station.
+    """
+    dt = interval_info["dt_minutes"]
+    row: dict[str, Any] = {"station_id": station_id}
+
+    # Coverage / completeness
+    row["years_covered_count"] = int(len(summary))
+    row["dt_minutes_median"] = float(np.nanmedian(summary["dt_minutes"].astype(float)))
+    row["coverage_weighted_pct"] = float(np.nanmean(summary["coverage_pct"].astype(float)))
+    row["partial_coverage_years_count"] = int(summary["partial_coverage_flag"].sum())
+
+    # Missing timestamps: NaN-safe mean (interval_unknown_flag rows have NaN missing_pct)
+    valid_mp = summary["missing_pct"].dropna()
+    row["timestamp_missing_pct_avg"] = float(valid_mp.mean()) if len(valid_mp) > 0 else float("nan")
+
+    row["interval_change_flag_any"] = bool(summary["interval_change_flag"].any())
+
+    # Wet-bulb availability (only if column present)
+    if "wetbulb_availability_pct" in summary.columns:
+        row["wetbulb_availability_pct_avg"] = float(
+            np.nanmean(summary["wetbulb_availability_pct"].astype(float))
+        )
+
+    # Temperature extremes
+    row["tmax_max"] = float(summary["tmax"].dropna().max()) if "tmax" in summary.columns and summary["tmax"].notna().any() else float("nan")
+    row["tmin_min"] = float(summary["tmin"].dropna().min()) if "tmin" in summary.columns and summary["tmin"].notna().any() else float("nan")
+
+    # Dry-bulb percentiles (median across years — new columns added in aggregate.py)
+    if "t_p99" in summary.columns and summary["t_p99"].notna().any():
+        row["t_p99_median"] = float(np.nanmedian(summary["t_p99"].astype(float)))
+    if "t_p996" in summary.columns and summary["t_p996"].notna().any():
+        row["t_p996_median"] = float(np.nanmedian(summary["t_p996"].astype(float)))
+
+    # Hours above ref and CDH for each requested threshold (recompute from windowed series)
+    dedup = windowed.loc[~windowed["_is_dup"]]
+    for rt in ref_temps:
+        rt_key = int(rt)
+        row[f"hours_above_ref_{rt_key}_sum"] = round(
+            hours_above_ref(dedup["temp"], rt, dt), 2
+        )
+        excess = (dedup["temp"].dropna() - rt).clip(lower=0.0)
+        row[f"cooling_degree_hours_{rt_key}_sum"] = round(
+            float(excess.sum() * (dt / 60.0)) if not (np.isnan(dt) or dt <= 0) else 0.0,
+            2,
+        )
+
+    # Freeze hours — prefer pre-computed column, fall back to direct computation
+    if "hours_below_32" in summary.columns:
+        row["freeze_hours_sum"] = round(float(summary["hours_below_32"].sum()), 2)
+    else:
+        row["freeze_hours_sum"] = round(
+            hours_above_ref(-dedup["temp"], -FREEZE_THRESHOLD_F, dt), 2
+        )
+
+    # Wet-bulb extremes
+    if "wb_p99" in summary.columns and summary["wb_p99"].notna().any():
+        row["wb_p99_median"] = float(np.nanmedian(summary["wb_p99"].dropna().astype(float)))
+    if "wb_p996" in summary.columns and summary["wb_p996"].notna().any():
+        row["wb_p996_median"] = float(np.nanmedian(summary["wb_p996"].dropna().astype(float)))
+
+    # Quality warning flag
+    mpa = row.get("timestamp_missing_pct_avg", float("nan"))
+    wba = row.get("wetbulb_availability_pct_avg", float("nan"))
+    row["missing_data_warning"] = bool(
+        (not np.isnan(mpa) and mpa > MISSING_DATA_WARNING_THRESHOLD)
+        or (not np.isnan(wba) and wba < WETBULB_AVAIL_WARNING_THRESHOLD)
+    )
+
+    return row
+
+
+def _minmax_norm(series: pd.Series, invert: bool = False) -> pd.Series:
+    """Min-max normalize *series* to [0, 100]. Returns 50 for all-equal series."""
+    lo = float(series.min())
+    hi = float(series.max())
+    if hi == lo:
+        return pd.Series(50.0, index=series.index, dtype=float)
+    result = (series - lo) / (hi - lo) * 100.0
+    return (100.0 - result) if invert else result
+
+
+def compute_scores(df: pd.DataFrame, ref_temps: list[float]) -> pd.DataFrame:
+    """Add heat/moisture/freeze/quality/overall score columns to a copy of *df*.
+
+    Scores are min-max normalized across stations to [0, 100].
+    Higher = more of that characteristic (more heat, more moisture, more freeze risk, better quality).
+    """
+    out = df.copy()
+
+    # Primary ref temp = max threshold (highest threshold captures hottest stations)
+    primary_rt = int(max(ref_temps))
+    primary_col = f"hours_above_ref_{primary_rt}_sum"
+
+    # ── heat_score ────────────────────────────────────────────────────────────
+    h_hours_raw = out[primary_col].fillna(0.0) if primary_col in out.columns else pd.Series(0.0, index=out.index)
+    h_t99_raw = out["t_p99_median"].fillna(out["t_p99_median"].mean()) if "t_p99_median" in out.columns else pd.Series(0.0, index=out.index)
+    h_hours = _minmax_norm(h_hours_raw)
+    h_t99 = _minmax_norm(h_t99_raw)
+    out["heat_score"] = (
+        HEAT_SCORE_WEIGHTS["hours_above_ref"] * h_hours
+        + HEAT_SCORE_WEIGHTS["t_p99"] * h_t99
+    ).round(1)
+
+    # ── moisture_score ────────────────────────────────────────────────────────
+    if "wb_p99_median" in out.columns and out["wb_p99_median"].notna().any():
+        wb_filled = out["wb_p99_median"].fillna(float(out["wb_p99_median"].mean()))
+        out["moisture_score"] = _minmax_norm(wb_filled).round(1)
+    else:
+        out["moisture_score"] = float("nan")
+
+    # ── freeze_score ──────────────────────────────────────────────────────────
+    f_hrs_raw = out["freeze_hours_sum"].fillna(0.0) if "freeze_hours_sum" in out.columns else pd.Series(0.0, index=out.index)
+    f_tmin_raw = out["tmin_min"].fillna(float(out["tmin_min"].mean())) if "tmin_min" in out.columns else pd.Series(0.0, index=out.index)
+    f_hrs = _minmax_norm(f_hrs_raw)
+    f_tmin = _minmax_norm(f_tmin_raw, invert=True)  # lower tmin = more freeze risk = higher score
+    out["freeze_score"] = (
+        FREEZE_SCORE_WEIGHTS["freeze_hours"] * f_hrs
+        + FREEZE_SCORE_WEIGHTS["tmin_min"] * f_tmin
+    ).round(1)
+
+    # ── data_quality_score ────────────────────────────────────────────────────
+    q_missing_raw = out["timestamp_missing_pct_avg"].fillna(0.0) if "timestamp_missing_pct_avg" in out.columns else pd.Series(0.0, index=out.index)
+    q_cov_raw = out["coverage_weighted_pct"].fillna(1.0) if "coverage_weighted_pct" in out.columns else pd.Series(1.0, index=out.index)
+    q_icf_raw = out["interval_change_flag_any"].astype(float) if "interval_change_flag_any" in out.columns else pd.Series(0.0, index=out.index)
+
+    q_missing = _minmax_norm(q_missing_raw, invert=True)
+    q_cov = _minmax_norm(q_cov_raw)
+    q_icf = _minmax_norm(q_icf_raw, invert=True)
+
+    if "wetbulb_availability_pct_avg" in out.columns:
+        q_wb = _minmax_norm(out["wetbulb_availability_pct_avg"].fillna(50.0))
+        out["data_quality_score"] = (
+            0.40 * q_missing + 0.20 * q_cov + 0.30 * q_wb + 0.10 * q_icf
+        ).round(1)
+    else:
+        # No wet-bulb availability data — use neutral 50 for that component
+        out["data_quality_score"] = (
+            0.40 * q_missing + 0.20 * q_cov + pd.Series(50.0 * 0.30, index=out.index) + 0.10 * q_icf
+        ).round(1)
+
+    # ── overall_score ─────────────────────────────────────────────────────────
+    w = SCORE_WEIGHTS
+    if out["moisture_score"].notna().all():
+        out["overall_score"] = (
+            w["heat"] * out["heat_score"]
+            + w["moisture"] * out["moisture_score"]
+            + w["freeze"] * out["freeze_score"]
+            + w["quality"] * out["data_quality_score"]
+        ).round(1)
+    else:
+        # Redistribute moisture weight: heat 0.50, freeze 0.35, quality 0.15
+        out["overall_score"] = (
+            0.50 * out["heat_score"]
+            + 0.35 * out["freeze_score"]
+            + 0.15 * out["data_quality_score"]
+        ).round(1)
+
+    return out
+
+
+def build_compare_summary(
+    station_results: list[StationResult],
+    ref_temps: list[float],
+) -> pd.DataFrame:
+    """Aggregate all stations and compute scores.
+
+    Parameters
+    ----------
+    station_results : list of StationResult from run_station_pipeline
+    ref_temps : list of reference temperatures for hours_above_ref columns
+
+    Returns
+    -------
+    pd.DataFrame — one row per station with all window-aggregated metrics and scores.
+    """
+    rows = []
+    for r in station_results:
+        row = aggregate_station_window(
+            summary=r.summary,
+            windowed=r.windowed,
+            interval_info=r.interval_info,
+            ref_temps=ref_temps,
+            station_id=r.cfg.station_id or "csv",
+        )
+        rows.append(row)
+    df = pd.DataFrame(rows)
+    df = compute_scores(df, ref_temps)
+    return df

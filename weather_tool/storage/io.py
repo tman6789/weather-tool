@@ -2,13 +2,17 @@
 
 from __future__ import annotations
 
+import dataclasses
 import json
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import pandas as pd
 
 from weather_tool.config import RunConfig
+
+if TYPE_CHECKING:
+    from weather_tool.pipeline import StationResult
 
 
 def _ensure_dir(path: Path) -> None:
@@ -53,3 +57,67 @@ def save_insights_md(content: str, cfg: RunConfig) -> Path:
     with open(p, "w", encoding="utf-8") as f:
         f.write(content)
     return p
+
+
+# ── Compare output helpers ────────────────────────────────────────────────────
+
+
+def _compare_dir(outdir: Path, start: str, end: str, stations: list[str]) -> Path:
+    """Return (and create) the compare output directory."""
+    n = len(stations)
+    tag = f"compare_{start}_{end}_{n}stations"
+    p = outdir / tag
+    _ensure_dir(p)
+    return p
+
+
+def save_compare_outputs(
+    compare_df: pd.DataFrame,
+    station_results: list[StationResult],
+    yearly_concat: pd.DataFrame,
+    report_md: str,
+    metadata: dict[str, Any],
+    compare_dir: Path,
+) -> dict[str, Path]:
+    """Write all compare outputs into *compare_dir* and per-station subfolders.
+
+    Returns a dict mapping output type → Path.
+    """
+    paths: dict[str, Path] = {}
+
+    # compare_summary.csv
+    p = compare_dir / "compare_summary.csv"
+    compare_df.to_csv(p, index=False)
+    paths["summary"] = p
+
+    # compare_yearly.parquet
+    p2 = compare_dir / "compare_yearly.parquet"
+    yearly_export = yearly_concat.drop(
+        columns=[c for c in yearly_concat.columns if c.startswith("_")], errors="ignore"
+    )
+    yearly_export.to_parquet(p2, index=False, engine="pyarrow")
+    paths["yearly"] = p2
+
+    # compare_report.md
+    p3 = compare_dir / "compare_report.md"
+    p3.write_text(report_md, encoding="utf-8")
+    paths["report"] = p3
+
+    # compare_metadata.json
+    p4 = compare_dir / "compare_metadata.json"
+    with open(p4, "w", encoding="utf-8") as f:
+        json.dump(metadata, f, indent=2, default=str)
+    paths["metadata"] = p4
+
+    # Per-station subfolders — summary CSV + quality + metadata JSONs
+    stations_dir = compare_dir / "stations"
+    for r in station_results:
+        sid = r.cfg.station_id or "csv"
+        sdir = stations_dir / sid
+        _ensure_dir(sdir)
+        sid_cfg = dataclasses.replace(r.cfg, outdir=sdir)
+        save_summary_csv(r.summary, sid_cfg)
+        save_quality_json(r.quality_report, sid_cfg)
+        save_metadata_json(r.metadata, sid_cfg)
+
+    return paths

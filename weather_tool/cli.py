@@ -8,7 +8,7 @@ from typing import Optional
 
 import typer
 
-from weather_tool.config import IEM_UNITS, Mode, RunConfig, Units
+from weather_tool.config import Mode, RunConfig, Units
 
 app = typer.Typer(name="weather-tool", help="Deterministic historical weather analysis tool.")
 
@@ -59,16 +59,10 @@ def run(
 
 
 def _execute(cfg: RunConfig) -> None:
-    """Orchestrate the full pipeline."""
-    import pandas as pd
-
-    from weather_tool.connectors.csv_connector import load_csv
-    from weather_tool.connectors.iem_connector import load_iem
-    from weather_tool.core.aggregate import build_yearly_summary
-    from weather_tool.core.metrics import infer_interval
-    from weather_tool.core.normalize import deduplicated, filter_window, normalize_timestamps
-    from weather_tool.insights.deterministic import generate_insights_md, trend_hours_above
+    """Orchestrate the full pipeline and save outputs."""
+    from weather_tool.insights.deterministic import generate_insights_md
     from weather_tool.insights.llm import generate_llm_narrative
+    from weather_tool.pipeline import run_station_pipeline
     from weather_tool.storage.io import (
         save_insights_md,
         save_metadata_json,
@@ -77,105 +71,43 @@ def _execute(cfg: RunConfig) -> None:
         save_summary_csv,
     )
 
-    # 1. Load raw data
     typer.echo(f"[1/6] Loading data ({cfg.mode} mode)...")
-    if cfg.mode == "csv":
-        raw = load_csv(cfg)
-    else:
-        raw = load_iem(cfg)
+    result = run_station_pipeline(cfg, echo=False)
 
-    typer.echo(f"       Loaded {len(raw)} raw records.")
-
-    # 2. Normalize + window
+    # Echo the pipeline steps that run_station_pipeline handled silently
+    typer.echo(f"       Loaded {result.quality_report['total_raw_records']} raw records.")
     typer.echo("[2/6] Normalising timestamps & filtering window...")
-    normed = normalize_timestamps(raw, tz=cfg.tz)
-    windowed = filter_window(normed, cfg.start, cfg.end, tz=cfg.tz)
-    typer.echo(f"       {len(windowed)} records in analysis window.")
-
-    # Compute wet-bulb if the required columns are present
-    if any(c in windowed.columns for c in ("tmpf", "relh", "dwpf")):
-        from weather_tool.core.metrics import compute_wetbulb_f
-        windowed = windowed.copy()
-        windowed["wetbulb_f"] = compute_wetbulb_f(windowed)
-        wb_avail = windowed["wetbulb_f"].notna().sum()
+    typer.echo(f"       {result.quality_report['total_windowed_records']} records in analysis window.")
+    if "wetbulb_f" in result.windowed.columns:
+        wb_avail = result.windowed["wetbulb_f"].notna().sum()
         typer.echo(f"       Wet-bulb computed: {wb_avail} non-NaN values.")
-
-    # 3. Interval inference (on deduplicated data)
     typer.echo("[3/6] Inferring sampling interval...")
-    dedup = deduplicated(windowed)
-    interval_info = infer_interval(dedup["timestamp"])
-    typer.echo(f"       dt_minutes = {interval_info['dt_minutes']}")
-    if interval_info["interval_change_flag"]:
+    typer.echo(f"       dt_minutes = {result.interval_info['dt_minutes']}")
+    if result.interval_info["interval_change_flag"]:
         typer.echo("       WARNING: interval changes detected in data.")
-
-    # 4. Yearly summary
     typer.echo("[4/6] Computing yearly summary...")
-    summary = build_yearly_summary(windowed, cfg, interval_info)
-    typer.echo(f"       {len(summary)} year(s) in summary.")
+    typer.echo(f"       {len(result.summary)} year(s) in summary.")
 
     if cfg.verbose:
-        typer.echo(summary.to_string(index=False))
+        typer.echo(result.summary.to_string(index=False))
 
-    # 5. Build quality report + metadata
-    _base_quality_cols = [
-        "year", "missing_pct", "duplicate_count", "nan_temp_count",
-        "interval_change_flag", "partial_coverage_flag", "coverage_pct",
-    ]
-    # Include any per-field quality columns present in summary
-    _extra_quality_cols = [
-        c for c in summary.columns
-        if c.startswith("nan_count_") or c.startswith("field_missing_pct_")
-        or c == "wetbulb_availability_pct"
-    ]
-    _quality_cols = _base_quality_cols + _extra_quality_cols
-    quality_report = {
-        "station_id": cfg.station_id or "csv",
-        "window": f"{cfg.start} to {cfg.end}",
-        "total_raw_records": len(raw),
-        "total_windowed_records": len(windowed),
-        "interval": interval_info,
-        "per_year": summary[_quality_cols].to_dict(orient="records"),
-    }
-    _units_meta: dict = {"temp": str(cfg.units)}
-    if cfg.mode == "iem":
-        _units_meta = {k: v for k, v in IEM_UNITS.items() if k in (cfg.fields + ["wetbulb_f"])}
-    metadata = {
-        "station_id": cfg.station_id or "csv",
-        "source": cfg.mode,
-        "fields": cfg.fields,
-        "units": _units_meta,
-        "ref_temp": cfg.ref_temp,
-        "tz": cfg.tz,
-        "window_start": str(cfg.start),
-        "window_end": str(cfg.end),
-        "dt_inference": {
-            "dt_minutes": interval_info["dt_minutes"],
-            "p10": interval_info["p10"],
-            "p90": interval_info["p90"],
-            "interval_change_flag": interval_info["interval_change_flag"],
-            "unique_diff_counts": interval_info["unique_diff_counts"],
-        },
-    }
-
-    # 6. Insights
     typer.echo("[5/6] Generating insights report...")
-    insights_md = generate_insights_md(summary, cfg, interval_info)
+    insights_md = generate_insights_md(result.summary, cfg, result.interval_info)
 
     llm_narrative = None
     if cfg.use_llm:
         typer.echo("       Generating LLM narrative...")
-        llm_narrative = generate_llm_narrative(summary, insights_md, quality_report)
+        llm_narrative = generate_llm_narrative(result.summary, insights_md, result.quality_report)
         if llm_narrative:
             insights_md += "\n\n## LLM Narrative\n\n" + llm_narrative
         else:
             typer.echo("       LLM narrative skipped (no API key or openai not installed).")
 
-    # 7. Save outputs
     typer.echo("[6/6] Saving outputs...")
-    p1 = save_summary_csv(summary, cfg)
-    p2 = save_raw_parquet(windowed, cfg)
-    p3 = save_quality_json(quality_report, cfg)
-    p4 = save_metadata_json(metadata, cfg)
+    p1 = save_summary_csv(result.summary, cfg)
+    p2 = save_raw_parquet(result.windowed, cfg)
+    p3 = save_quality_json(result.quality_report, cfg)
+    p4 = save_metadata_json(result.metadata, cfg)
     p5 = save_insights_md(insights_md, cfg)
 
     typer.echo(f"  Summary CSV:     {p1}")
@@ -183,6 +115,103 @@ def _execute(cfg: RunConfig) -> None:
     typer.echo(f"  Quality JSON:    {p3}")
     typer.echo(f"  Metadata JSON:   {p4}")
     typer.echo(f"  Insights MD:     {p5}")
+    typer.echo("Done.")
+
+
+@app.command()
+def compare(
+    stations: list[str] = typer.Argument(..., help="Station IDs to compare (e.g. KIAD KDEN KPHX)"),
+    start: str = typer.Option(..., help="Analysis start date YYYY-MM-DD"),
+    end: str = typer.Option(..., help="Analysis end date YYYY-MM-DD"),
+    ref_temps: str = typer.Option("65", "--ref-temps", help="Comma-separated reference temperatures (e.g. 80,85,90)"),
+    fields: str = typer.Option("tmpf,dwpf,relh", "--fields", help="Comma-separated IEM fields to request"),
+    tz: str = typer.Option("UTC", "--tz", help="IANA timezone for timestamps"),
+    outdir: Path = typer.Option(Path("outputs"), help="Output directory"),
+    verbose: bool = typer.Option(False, "--verbose", help="Verbose output"),
+) -> None:
+    """Compare climate metrics across multiple stations."""
+    from weather_tool.core.compare import build_compare_summary
+    from weather_tool.insights.compare_report import generate_compare_report_md
+    from weather_tool.pipeline import run_station_pipeline
+    from weather_tool.storage.io import save_compare_outputs
+
+    ref_temps_list = [float(t.strip()) for t in ref_temps.split(",") if t.strip()]
+    fields_list = [f.strip() for f in fields.split(",") if f.strip()]
+    start_date = date.fromisoformat(start)
+    end_date = date.fromisoformat(end)
+
+    if len(stations) < 2:
+        typer.echo("ERROR: at least 2 stations are required for compare.", err=True)
+        raise typer.Exit(1)
+
+    station_results = []
+    for i, sid in enumerate(stations, 1):
+        typer.echo(f"[{i}/{len(stations)}] Running pipeline for {sid}...")
+        cfg = RunConfig(
+            mode="iem",
+            station_id=sid,
+            start=start_date,
+            end=end_date,
+            ref_temp=ref_temps_list[0],
+            fields=fields_list,
+            tz=tz,
+            outdir=outdir,
+            verbose=verbose,
+        )
+        cfg.validate()
+        result = run_station_pipeline(cfg, echo=verbose)
+        station_results.append(result)
+        typer.echo(f"       {len(result.summary)} year(s), dt={result.interval_info['dt_minutes']} min.")
+
+    typer.echo("Building comparison table...")
+    compare_df = build_compare_summary(station_results, ref_temps_list)
+
+    typer.echo("Generating comparison report...")
+    report_md = generate_compare_report_md(
+        compare_df=compare_df,
+        stations=stations,
+        window_start=start_date,
+        window_end=end_date,
+        fields=fields_list,
+        ref_temps=ref_temps_list,
+    )
+
+    import pandas as pd
+    yearly_concat = pd.concat(
+        [r.summary.assign(station_id=r.cfg.station_id) for r in station_results],
+        ignore_index=True,
+    )
+
+    import datetime as _dt
+    metadata = {
+        "stations": stations,
+        "window_start": start,
+        "window_end": end,
+        "fields": fields_list,
+        "ref_temps": ref_temps_list,
+        "tz": tz,
+        "run_timestamp": str(_dt.datetime.now(tz=_dt.timezone.utc).isoformat()),
+        "per_station_dt": {
+            r.cfg.station_id: r.interval_info["dt_minutes"]
+            for r in station_results
+        },
+    }
+
+    from weather_tool.storage.io import _compare_dir
+    cdir = _compare_dir(outdir, start, end, stations)
+    paths = save_compare_outputs(
+        compare_df=compare_df,
+        station_results=station_results,
+        yearly_concat=yearly_concat,
+        report_md=report_md,
+        metadata=metadata,
+        compare_dir=cdir,
+    )
+
+    typer.echo(f"  Compare summary: {paths['summary']}")
+    typer.echo(f"  Compare report:  {paths['report']}")
+    typer.echo(f"  Yearly parquet:  {paths['yearly']}")
+    typer.echo(f"  Metadata JSON:   {paths['metadata']}")
     typer.echo("Done.")
 
 

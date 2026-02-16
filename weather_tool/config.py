@@ -15,6 +15,17 @@ PARTIAL_COVERAGE_THRESHOLD = 0.98  # coverage_pct below this → partial flag
 INTERVAL_CHANGE_RATIO = 0.20       # fraction of diffs that may deviate
 INTERVAL_CHANGE_TOL = 0.10         # fractional tolerance around median dt
 
+# Compare engine constants
+FREEZE_THRESHOLD_F: float = 32.0
+MISSING_DATA_WARNING_THRESHOLD: float = 0.02   # 2% missing timestamps
+WETBULB_AVAIL_WARNING_THRESHOLD: float = 70.0  # 70% wet-bulb availability
+
+SCORE_WEIGHTS: dict[str, float] = {
+    "heat": 0.35, "moisture": 0.35, "freeze": 0.20, "quality": 0.10
+}
+HEAT_SCORE_WEIGHTS: dict[str, float] = {"hours_above_ref": 0.60, "t_p99": 0.40}
+FREEZE_SCORE_WEIGHTS: dict[str, float] = {"freeze_hours": 0.70, "tmin_min": 0.30}
+
 IEM_UNITS: dict[str, str] = {
     "tmpf": "F",
     "dwpf": "F",

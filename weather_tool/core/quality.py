@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from typing import Any
 
 import pandas as pd
@@ -47,10 +48,11 @@ def compute_quality(
     duplicate_count = int(df["_is_dup"].sum())
 
     expected = expected_records(slice_start, slice_end, dt_minutes)
+    interval_unknown = expected == 0  # dt_minutes NaN/≤0 → can't compute missing%
     if expected > 0:
-        missing_pct = max(0.0, min(1.0, 1.0 - n_unique_timestamps / expected))
+        missing_pct: float | None = max(0.0, min(1.0, 1.0 - n_unique_timestamps / expected))
     else:
-        missing_pct = 0.0
+        missing_pct = float("nan")
 
     result: dict[str, Any] = {
         "n_records_total": n_records_total,
@@ -58,8 +60,9 @@ def compute_quality(
         "nan_temp_count": nan_temp_count,
         "n_unique_timestamps": n_unique_timestamps,
         "duplicate_count": duplicate_count,
-        "missing_pct": round(missing_pct, 6),
+        "missing_pct": round(missing_pct, 6) if not math.isnan(missing_pct) else float("nan"),
         "interval_change_flag": interval_change_flag,
+        "interval_unknown_flag": interval_unknown,
     }
 
     # Per-field NaN counts and field_missing_pct

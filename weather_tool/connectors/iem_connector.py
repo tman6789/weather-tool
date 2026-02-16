@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+import warnings
 from datetime import date
 from urllib.parse import urlencode
 
@@ -49,7 +50,15 @@ def load_iem(cfg: RunConfig) -> pd.DataFrame:
     if not cfg.station_id:
         raise ValueError("station_id is required for IEM mode")
 
-    fields = cfg.fields if cfg.fields else ["tmpf"]
+    fields = list(cfg.fields) if cfg.fields else ["tmpf"]
+    if "tmpf" not in fields:
+        warnings.warn(
+            "tmpf (dry-bulb temperature) is not in --fields; auto-including it so "
+            "the 'temp' column and hours_above_ref are populated. "
+            "Add tmpf explicitly to suppress this warning.",
+            stacklevel=2,
+        )
+        fields = ["tmpf"] + fields
     url = _build_url(cfg.station_id, cfg.start, cfg.end, fields)
 
     resp = requests.get(url, timeout=120)
