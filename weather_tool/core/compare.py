@@ -8,6 +8,8 @@ import numpy as np
 import pandas as pd
 
 from weather_tool.config import (
+    ECON_WB_COVERAGE_MIN_FRAC,
+    FREEZE_CONFIDENCE_TEMP_AVAIL_MIN_FRAC,
     FREEZE_THRESHOLD_F,
     FREEZE_SCORE_WEIGHTS,
     HEAT_SCORE_WEIGHTS,
@@ -86,13 +88,65 @@ def aggregate_station_window(
             2,
         )
 
-    # Freeze hours — prefer pre-computed column, fall back to direct computation
-    if "hours_below_32" in summary.columns:
+    # Freeze hours — prefer new column, fall back to legacy name, then direct computation
+    if "freeze_hours" in summary.columns:
+        row["freeze_hours_sum"] = round(float(summary["freeze_hours"].dropna().sum()), 2)
+    elif "hours_below_32" in summary.columns:
         row["freeze_hours_sum"] = round(float(summary["hours_below_32"].sum()), 2)
     else:
         row["freeze_hours_sum"] = round(
             hours_above_ref(-dedup["temp"], -FREEZE_THRESHOLD_F, dt), 2
         )
+
+    # Shoulder freeze hours — NaN-safe sum
+    if "freeze_hours_shoulder" in summary.columns:
+        row["freeze_hours_shoulder_sum"] = round(
+            float(summary["freeze_hours_shoulder"].dropna().sum()), 2
+        )
+
+    # Total hours with temp — sum (denominator for window-level freeze pct)
+    if "total_hours_with_temp" in summary.columns:
+        row["total_hours_with_temp_sum"] = round(
+            float(summary["total_hours_with_temp"].dropna().sum()), 2
+        )
+
+    # Window-level freeze pct = freeze_hours_sum / total_hours_with_temp_sum
+    frz_sum = row.get("freeze_hours_sum", float("nan"))
+    tht_sum = row.get("total_hours_with_temp_sum", 0.0)
+    if not np.isnan(frz_sum) and tht_sum > 0:
+        row["freeze_hours_pct_over_window"] = round(float(frz_sum) / float(tht_sum), 6)
+    else:
+        row["freeze_hours_pct_over_window"] = float("nan")
+
+    # Freeze event count — sum across years
+    if "freeze_event_count" in summary.columns:
+        row["freeze_event_count_sum"] = int(summary["freeze_event_count"].fillna(0).sum())
+
+    # Freeze event max duration — max of yearly maxima
+    if "freeze_event_max_duration_hours" in summary.columns:
+        valid_ev = summary["freeze_event_max_duration_hours"].dropna()
+        row["freeze_event_max_duration_hours_max"] = (
+            float(valid_ev.max()) if len(valid_ev) > 0 else float("nan")
+        )
+
+    # Freeze confidence flag — uses actual window hours from summary date range
+    frz_mpa = row.get("timestamp_missing_pct_avg", float("nan"))
+    frz_tht = row.get("total_hours_with_temp_sum", float("nan"))
+    low_temp_avail = False
+    if (
+        "window_start" in summary.columns
+        and "window_end" in summary.columns
+        and len(summary) > 0
+    ):
+        win_start = pd.Timestamp(str(summary["window_start"].min()))
+        win_end = pd.Timestamp(str(summary["window_end"].max())) + pd.Timedelta(days=1)
+        window_hours = (win_end - win_start).total_seconds() / 3600.0
+        if window_hours > 0 and not np.isnan(frz_tht):
+            low_temp_avail = (frz_tht / window_hours) < FREEZE_CONFIDENCE_TEMP_AVAIL_MIN_FRAC
+    row["freeze_confidence_flag"] = bool(
+        (not np.isnan(frz_mpa) and frz_mpa > MISSING_DATA_WARNING_THRESHOLD)
+        or low_temp_avail
+    )
 
     # Wet-bulb extremes
     if "wb_p99" in summary.columns and summary["wb_p99"].notna().any():
@@ -110,6 +164,19 @@ def aggregate_station_window(
     if "wec_hours" in summary.columns:
         valid_wec = summary["wec_hours"].dropna()
         row["wec_hours_sum"] = round(float(valid_wec.sum()), 2) if len(valid_wec) > 0 else float("nan")
+
+    # Hours with wetbulb — sum (0-safe; 0.0 means no wetbulb data at all)
+    if "hours_with_wetbulb" in summary.columns:
+        hwb_vals = summary["hours_with_wetbulb"].fillna(0.0)
+        row["hours_with_wetbulb_sum"] = round(float(hwb_vals.sum()), 2)
+
+    # WEC feasibility over full window = wec_hours_sum / hours_with_wetbulb_sum
+    wec_sum = row.get("wec_hours_sum", float("nan"))
+    hwb_sum = row.get("hours_with_wetbulb_sum", 0.0)
+    if not np.isnan(wec_sum) and hwb_sum > 0:
+        row["wec_feasible_pct_over_window"] = round(float(wec_sum) / float(hwb_sum), 6)
+    else:
+        row["wec_feasible_pct_over_window"] = float("nan")
 
     # Tower stress hours per threshold — sum across years
     stress_cols = [c for c in summary.columns if c.startswith("tower_stress_hours_wb_gt_")]
@@ -130,12 +197,28 @@ def aggregate_station_window(
             float(np.nanmedian(valid_lwt)) if len(valid_lwt) > 0 else float("nan")
         )
 
-    # Econ confidence flag
+    # Econ confidence flag — fires when any of:
+    #   1. timestamp_missing_pct_avg > MISSING_DATA_WARNING_THRESHOLD (2%)
+    #   2. wetbulb_availability_pct_avg < WETBULB_AVAIL_WARNING_THRESHOLD (70%)
+    #   3. hours_with_wetbulb_sum / max_possible_hours < ECON_WB_COVERAGE_MIN_FRAC (90%)
     mpa_econ = row.get("timestamp_missing_pct_avg", float("nan"))
     wba_econ = row.get("wetbulb_availability_pct_avg", float("nan"))
+    cov_econ = row.get("coverage_weighted_pct", float("nan"))
+    yrs_econ = row.get("years_covered_count", 0)
+    hwb_econ = row.get("hours_with_wetbulb_sum", float("nan"))
+    # Estimate max possible wetbulb hours from years × 8760 × avg coverage
+    if yrs_econ > 0 and not np.isnan(cov_econ):
+        max_possible_hours = yrs_econ * 8760.0 * cov_econ
+        low_wb_coverage = (
+            not np.isnan(hwb_econ) and max_possible_hours > 0
+            and (hwb_econ / max_possible_hours) < ECON_WB_COVERAGE_MIN_FRAC
+        )
+    else:
+        low_wb_coverage = False
     row["econ_confidence_flag"] = bool(
         (not np.isnan(mpa_econ) and mpa_econ > MISSING_DATA_WARNING_THRESHOLD)
         or (not np.isnan(wba_econ) and wba_econ < WETBULB_AVAIL_WARNING_THRESHOLD)
+        or low_wb_coverage
     )
 
     # Quality warning flag

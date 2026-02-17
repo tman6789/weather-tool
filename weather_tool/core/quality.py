@@ -79,11 +79,17 @@ def compute_quality(
             6,
         )
 
-    # Wet-bulb availability %
-    if "wetbulb_f" in df.columns and n_records_with_temp > 0:
-        wb_avail = int(df["wetbulb_f"].notna().sum())
-        result["wetbulb_availability_pct"] = round(
-            wb_avail / n_records_with_temp * 100, 2
-        )
+    # Wet-bulb availability % — use deduplicated rows for both numerator and
+    # denominator, consistent with all other per-year metrics.  Duplicate rows
+    # with a valid temp but NaN wetbulb would otherwise inflate the denominator
+    # and depress availability even though they are excluded from metric computation.
+    if "wetbulb_f" in df.columns:
+        dedup_df = df[~df["_is_dup"]]
+        n_dedup_with_temp = int(dedup_df["temp"].notna().sum())
+        if n_dedup_with_temp > 0:
+            wb_avail = int(dedup_df["wetbulb_f"].notna().sum())
+            result["wetbulb_availability_pct"] = round(
+                wb_avail / n_dedup_with_temp * 100, 2
+            )
 
     return result

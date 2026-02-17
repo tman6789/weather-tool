@@ -59,8 +59,16 @@ def run_station_pipeline(cfg: RunConfig, echo: bool = False) -> StationResult:
     windowed = filter_window(normed, cfg.start, cfg.end, tz=cfg.tz)
     _echo(f"  {len(windowed)} records in analysis window.")
 
-    # Compute wet-bulb if the required columns are present
-    if any(c in windowed.columns for c in ("tmpf", "relh", "dwpf")):
+    # Compute wet-bulb only when both a temperature source and a humidity source
+    # are present with at least one non-null value.  Without humidity, compute_wetbulb_f
+    # returns all-NaN, which would spuriously trip the econ/freeze confidence flags.
+    has_temp = any(
+        c in windowed.columns and windowed[c].notna().any() for c in ("temp", "tmpf")
+    )
+    has_humidity = any(
+        c in windowed.columns and windowed[c].notna().any() for c in ("relh", "dwpf")
+    )
+    if has_temp and has_humidity:
         windowed = windowed.copy()
         windowed["wetbulb_f"] = compute_wetbulb_f(windowed)
         wb_avail = windowed["wetbulb_f"].notna().sum()

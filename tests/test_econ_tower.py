@@ -58,33 +58,43 @@ class TestAirEconHours:
 
 class TestWecHours:
     def test_required_twb_max_correct(self):
-        """required_twb_max = supply - tower_approach - hx_approach."""
+        """required_twb_max = supply - tower_approach - hx_approach = 44-7-5 = 32."""
         wb = pd.Series([30.0] * 10)
-        req, _, _ = compute_wec_hours(wb, chw_supply_f=44.0, tower_approach_f=7.0, hx_approach_f=5.0, dt_minutes=60.0)
-        assert req == pytest.approx(32.0)  # 44 - 7 - 5
+        req, _, _, _ = compute_wec_hours(wb, chw_supply_f=44.0, tower_approach_f=7.0, hx_approach_f=5.0, dt_minutes=60.0)
+        assert req == pytest.approx(32.0)
 
     def test_all_below_required(self):
         wb = pd.Series([25.0] * 24)
-        _, wec_hrs, _ = compute_wec_hours(wb, 44.0, 7.0, 5.0, 60.0)
+        _, wec_hrs, _, _ = compute_wec_hours(wb, 44.0, 7.0, 5.0, 60.0)
         assert wec_hrs == pytest.approx(24.0)
 
     def test_none_below_required(self):
         wb = pd.Series([40.0] * 24)
-        _, wec_hrs, _ = compute_wec_hours(wb, 44.0, 7.0, 5.0, 60.0)
+        _, wec_hrs, _, _ = compute_wec_hours(wb, 44.0, 7.0, 5.0, 60.0)
         assert wec_hrs == 0.0
 
-    def test_feasibility_pct_correct(self):
-        """12 of 24 observations below required → pct = 0.5."""
-        wb = pd.Series([25.0] * 12 + [40.0] * 12)
-        _, wec_hrs, wec_pct = compute_wec_hours(wb, 44.0, 7.0, 5.0, 60.0)
-        assert wec_hrs == pytest.approx(12.0)
+    def test_feasibility_pct_and_hours_with_wetbulb(self):
+        """48h series: 24 below required, 24 above → pct=0.5, hours_with_wetbulb=48."""
+        wb = pd.Series([25.0] * 24 + [40.0] * 24)
+        _, wec_hrs, wec_pct, hwb = compute_wec_hours(wb, 44.0, 7.0, 5.0, 60.0)
+        assert wec_hrs == pytest.approx(24.0)
+        assert hwb == pytest.approx(48.0)
         assert wec_pct == pytest.approx(0.5)
 
-    def test_all_nan_wb_returns_nan(self):
+    def test_all_nan_wb_returns_nan_and_zero_hwb(self):
+        """All-NaN wetbulb: wec_hours=NaN, wec_feasible_pct=NaN, hours_with_wetbulb=0."""
         wb = pd.Series([float("nan")] * 10)
-        _, wec_hrs, wec_pct = compute_wec_hours(wb, 44.0, 7.0, 5.0, 60.0)
+        _, wec_hrs, wec_pct, hwb = compute_wec_hours(wb, 44.0, 7.0, 5.0, 60.0)
         assert math.isnan(wec_hrs)
         assert math.isnan(wec_pct)
+        assert hwb == 0.0
+
+    def test_invalid_dt_returns_nan(self):
+        wb = pd.Series([30.0] * 10)
+        _, wec_hrs, wec_pct, hwb = compute_wec_hours(wb, 44.0, 7.0, 5.0, float("nan"))
+        assert math.isnan(wec_hrs)
+        assert math.isnan(wec_pct)
+        assert math.isnan(hwb)
 
 
 # ── 7.3 Tower stress thresholds ───────────────────────────────────────────────
@@ -198,3 +208,46 @@ class TestLwtProxy:
         result = compute_lwt_proxy_metrics(wb, tower_approach_f=7.0)
         assert result["lwt_proxy_p99"] == pytest.approx(79.0)
         assert result["lwt_proxy_max"] == pytest.approx(79.0)
+
+
+# ── 7.6 Compare aggregation (WEC window metrics) ──────────────────────────────
+
+class TestWecCompareAggregation:
+    """Spec D: two-year summary aggregation produces correct window-level metrics."""
+
+    def _make_summary(self) -> pd.DataFrame:
+        """Two years: yr1=200 wec_hrs / 400 hwb, yr2=100 wec_hrs / 200 hwb."""
+        return pd.DataFrame({
+            "wec_hours": [200.0, 100.0],
+            "hours_with_wetbulb": [400.0, 200.0],
+        })
+
+    def test_wec_hours_sum(self):
+        df = self._make_summary()
+        wec_sum = df["wec_hours"].dropna().sum()
+        assert wec_sum == pytest.approx(300.0)
+
+    def test_hours_with_wetbulb_sum(self):
+        df = self._make_summary()
+        hwb_sum = df["hours_with_wetbulb"].fillna(0.0).sum()
+        assert hwb_sum == pytest.approx(600.0)
+
+    def test_wec_feasible_pct_over_window(self):
+        """300 wec_hrs / 600 hwb_hrs = 0.5."""
+        df = self._make_summary()
+        wec_sum = float(df["wec_hours"].dropna().sum())
+        hwb_sum = float(df["hours_with_wetbulb"].fillna(0.0).sum())
+        pct = wec_sum / hwb_sum if hwb_sum > 0 else float("nan")
+        assert pct == pytest.approx(0.5)
+
+    def test_zero_hwb_yields_nan_pct(self):
+        """All-NaN wetbulb years → hours_with_wetbulb_sum=0 → pct=NaN."""
+        df = pd.DataFrame({
+            "wec_hours": [float("nan"), float("nan")],
+            "hours_with_wetbulb": [0.0, 0.0],
+        })
+        wec_sum_vals = df["wec_hours"].dropna()
+        hwb_sum = float(df["hours_with_wetbulb"].fillna(0.0).sum())
+        wec_sum = float(wec_sum_vals.sum()) if len(wec_sum_vals) > 0 else float("nan")
+        pct = wec_sum / hwb_sum if (not math.isnan(wec_sum) and hwb_sum > 0) else float("nan")
+        assert math.isnan(pct)

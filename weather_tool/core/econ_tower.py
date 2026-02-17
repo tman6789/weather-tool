@@ -42,39 +42,45 @@ def compute_wec_hours(
     tower_approach_f: float,
     hx_approach_f: float,
     dt_minutes: float,
-) -> tuple[float, float, float]:
+) -> tuple[float, float, float, float]:
     """Compute waterside-economizer proxy hours.
 
-    required_twb_max = chw_supply_f - tower_approach_f - hx_approach_f
+    Physical temperature chain (screening-level):
+      Tower delivers: CWS ≈ Twb + tower_approach
+      Plate HX delivers: CHWS ≈ CWS + hx_approach
+    WEC is feasible (full) when: Twb + tower_approach + hx_approach <= chw_supply
 
-    wec_hours = count(Twb <= required_twb_max AND not NaN) * dt_hours
-    wec_feasibility_pct = wec_hours / total_hours_with_wetbulb
+    Therefore:
+      required_twb_max = chw_supply_f - tower_approach_f - hx_approach_f
+      wec_hours = count(Twb <= required_twb_max AND not NaN) * dt_hours
+      wec_feasible_pct = wec_hours / hours_with_wetbulb
 
     Parameters
     ----------
     wb : pd.Series of wet-bulb temperatures (°F); may contain NaN.
     chw_supply_f : chilled water supply temperature (°F).
     tower_approach_f : tower approach delta (°F).
-    hx_approach_f : heat-exchanger approach delta (°F).
+    hx_approach_f : heat-exchanger approach delta (°F) for the plate HX.
     dt_minutes : inferred sampling interval in minutes.
 
     Returns
     -------
-    tuple of (required_twb_max, wec_hours, wec_feasibility_pct).
-    wec_hours and wec_feasibility_pct are NaN when wb has no valid data or
-    dt_minutes is invalid.
+    tuple of (required_twb_max, wec_hours, wec_feasible_pct, hours_with_wetbulb).
+    wec_hours and wec_feasible_pct are NaN when wb has no valid data or
+    dt_minutes is invalid. hours_with_wetbulb is 0.0 when wb is all-NaN,
+    NaN when dt_minutes is invalid.
     """
     required_twb_max = chw_supply_f - tower_approach_f - hx_approach_f
     if math.isnan(dt_minutes) or dt_minutes <= 0:
-        return required_twb_max, float("nan"), float("nan")
+        return required_twb_max, float("nan"), float("nan"), float("nan")
     valid = wb.dropna()
     if len(valid) == 0:
-        return required_twb_max, float("nan"), float("nan")
+        return required_twb_max, float("nan"), float("nan"), 0.0
+    hours_with_wetbulb = round(float(len(valid)) * (dt_minutes / 60.0), 2)
     wec_count = int((valid <= required_twb_max).sum())
-    total_wb_hours = float(len(valid)) * (dt_minutes / 60.0)
     wec_hours = round(wec_count * (dt_minutes / 60.0), 2)
-    wec_pct = round(wec_hours / total_wb_hours, 6) if total_wb_hours > 0 else float("nan")
-    return required_twb_max, wec_hours, wec_pct
+    wec_feasible_pct = round(wec_hours / hours_with_wetbulb, 6) if hours_with_wetbulb > 0 else float("nan")
+    return required_twb_max, wec_hours, wec_feasible_pct, hours_with_wetbulb
 
 
 def compute_tower_stress_hours(
@@ -232,12 +238,13 @@ def compute_econ_tower_yearly(
     wb = dedup["wetbulb_f"] if wb_available else pd.Series([], dtype=float)
 
     # WEC proxy
-    required_twb_max, wec_hours, wec_pct = compute_wec_hours(
+    required_twb_max, wec_hours, wec_feasible_pct, hours_with_wetbulb = compute_wec_hours(
         wb, chw_supply_f, tower_approach_f, hx_approach_f, dt_minutes
     )
     result["required_twb_max"] = required_twb_max
     result["wec_hours"] = wec_hours
-    result["wec_feasibility_pct"] = wec_pct
+    result["wec_feasible_pct"] = wec_feasible_pct
+    result["hours_with_wetbulb"] = hours_with_wetbulb
 
     # Tower stress hours
     stress = compute_tower_stress_hours(wb, wb_stress_thresholds, dt_minutes)

@@ -285,3 +285,142 @@ class TestYearlySummary:
         # 8 valid temps above 65, at 60-min → 8 hours
         assert row["hours_above_ref"] == pytest.approx(8.0)
         assert row["nan_temp_count"] == 2
+
+    def test_wetbulb_not_computed_when_only_drybulb(self):
+        """Bug 1 regression: tmpf-only data must NOT create a wetbulb_f column.
+
+        Before the fix, the pipeline gate fired on any of (tmpf|relh|dwpf),
+        so a dry-bulb-only dataset with tmpf still called compute_wetbulb_f and
+        added an all-NaN wetbulb_f column, which set wetbulb_availability_pct=0
+        and tripped econ/freeze confidence flags spuriously.
+        """
+        periods = 100
+        ts = pd.date_range("2023-07-01", periods=periods, freq="60min", tz="UTC")
+        df = pd.DataFrame({
+            "timestamp": ts,
+            "tmpf": np.full(periods, 86.0),
+            "temp": np.full(periods, 86.0),
+            "station_id": "TEST",
+            # no relh, no dwpf
+        })
+        cfg = RunConfig(
+            mode="iem",
+            station_id="TEST",
+            start=date(2023, 7, 1),
+            end=date(2023, 7, 31),
+            ref_temp=65.0,
+            units="agnostic",
+            tz="UTC",
+        )
+        normed = normalize_timestamps(df)
+        windowed = filter_window(normed, cfg.start, cfg.end)
+        from weather_tool.core.normalize import deduplicated
+        dedup = deduplicated(windowed)
+        interval = infer_interval(dedup["timestamp"])
+
+        summary = build_yearly_summary(windowed, cfg, interval)
+        # No wb_ columns — wet-bulb gate should not have fired
+        for col in ("wb_p99", "wb_p996", "wb_max", "wb_mean"):
+            assert col not in summary.columns, f"Unexpected column {col!r} in dry-bulb-only summary"
+        # No wetbulb_availability_pct — confirms gate did not fire
+        assert "wetbulb_availability_pct" not in summary.columns
+
+    def test_wetbulb_availability_pct_ignores_duplicates(self):
+        """Bug 2 regression: duplicate rows with valid temp but NaN wetbulb must not
+        inflate the denominator and depress wetbulb_availability_pct.
+
+        Before the fix, df (including _is_dup=True rows) was used for both numerator
+        and denominator; a dup with temp != NaN but wetbulb_f = NaN would add 1 to the
+        denominator without contributing to the numerator, giving < 100% availability
+        even when all *unique* observations have valid wetbulb.
+        """
+        from weather_tool.core.metrics import compute_wetbulb_f
+        periods = 5
+        ts_unique = pd.date_range("2023-07-01", periods=periods, freq="60min", tz="UTC")
+        # Insert a duplicate of ts_unique[0] at the end — same timestamp, valid temp
+        timestamps = list(ts_unique) + [ts_unique[0]]
+        temps_f = [86.0] * periods + [86.0]   # all valid including the dup
+        relh_vals = [50.0] * periods + [float("nan")]  # dup has NaN relh → NaN wetbulb
+
+        df = pd.DataFrame({
+            "timestamp": timestamps,
+            "tmpf": temps_f,
+            "temp": temps_f,
+            "relh": relh_vals,
+            "station_id": "TEST",
+        })
+        df["wetbulb_f"] = compute_wetbulb_f(df)
+
+        cfg = RunConfig(
+            mode="iem",
+            station_id="TEST",
+            start=date(2023, 7, 1),
+            end=date(2023, 7, 1),
+            ref_temp=65.0,
+            units="agnostic",
+            tz="UTC",
+        )
+        normed = normalize_timestamps(df)
+        windowed = filter_window(normed, cfg.start, cfg.end)
+        from weather_tool.core.normalize import deduplicated
+        dedup = deduplicated(windowed)
+        interval = infer_interval(dedup["timestamp"])
+
+        summary = build_yearly_summary(windowed, cfg, interval)
+        row = summary.iloc[0]
+        # All 5 unique timestamps have valid wetbulb (relh is non-NaN for originals)
+        # Availability must be 100 % — the duplicate must not count in denominator
+        assert "wetbulb_availability_pct" in summary.columns
+        assert float(row["wetbulb_availability_pct"]) == pytest.approx(100.0)
+
+    def test_per_year_dt_when_interval_changes(self):
+        """Bug 3 regression: when interval_change_flag is True, each year must use
+        its own inferred dt_minutes rather than the global median.
+
+        Year 2022 at 60-min (8760 obs), year 2023 at 20-min (26280 obs).
+        Global median is dominated by whichever interval has more diffs; the per-year
+        fix must store the correct dt for each year so hours_above_ref is scaled right.
+        """
+        ts_2022 = pd.date_range("2022-01-01", periods=8760, freq="60min", tz="UTC")
+        ts_2023 = pd.date_range("2023-01-01", periods=26280, freq="20min", tz="UTC")
+        all_ts = list(ts_2022) + list(ts_2023)
+        all_temps = [80.0] * len(all_ts)  # all above ref_temp=65
+
+        df = pd.DataFrame({
+            "timestamp": all_ts,
+            "temp": all_temps,
+            "station_id": "TEST",
+        })
+        cfg = RunConfig(
+            mode="csv",
+            station_id="TEST",
+            start=date(2022, 1, 1),
+            end=date(2023, 12, 31),
+            ref_temp=65.0,
+            units="agnostic",
+            tz="UTC",
+        )
+        normed = normalize_timestamps(df)
+        windowed = filter_window(normed, cfg.start, cfg.end)
+        from weather_tool.core.normalize import deduplicated
+        dedup = deduplicated(windowed)
+        interval = infer_interval(dedup["timestamp"])
+
+        # The mixed-interval dataset must raise interval_change_flag
+        assert interval["interval_change_flag"] is True
+
+        summary = build_yearly_summary(windowed, cfg, interval)
+        assert len(summary) == 2
+
+        row_2022 = summary[summary["year"] == 2022].iloc[0]
+        row_2023 = summary[summary["year"] == 2023].iloc[0]
+
+        # Per-year dt must match the actual interval for each year
+        assert row_2022["dt_minutes"] == pytest.approx(60.0)
+        assert row_2023["dt_minutes"] == pytest.approx(20.0)
+
+        # hours_above_ref must be correctly scaled:
+        # 2022: 8760 obs × (60/60) = 8760 hrs (non-leap year, all above ref)
+        assert row_2022["hours_above_ref"] == pytest.approx(8760.0)
+        # 2023: 26280 obs × (20/60) = 8760 hrs
+        assert row_2023["hours_above_ref"] == pytest.approx(8760.0)

@@ -1,6 +1,6 @@
 # Weather Analysis Tool
 
-Deterministic historical weather time-series analysis. Computes yearly summaries (Tmax, Tmin, wet-bulb percentiles, hours above a reference temperature), data quality flags, and generates an insights report — all without relying on an LLM for metric computation.
+Deterministic historical weather time-series analysis. Computes yearly summaries (Tmax, Tmin, wet-bulb percentiles, hours above a reference temperature, freeze risk), data quality flags, and generates an insights report — all without relying on an LLM for metric computation.
 
 ## Install
 
@@ -197,6 +197,188 @@ For CSV mode, `--units` records the unit in metadata; no conversion is applied.
 | IEM  | °F        | %    | knots     | deg  | °F        |
 | CSV  | as-is     | —    | —         | —    | °F (if computed) |
 
+## Economizer / Tower Decision Metrics
+
+All metrics are **screening-level proxies** computed from dry-bulb and wet-bulb temperatures. They are not full psychrometric simulations; results should be validated against site-specific equipment specs before use in design decisions.
+
+### Airside Economizer Hours
+
+```
+air_econ_hours = count(Tdb ≤ air_econ_threshold_f  AND  not NaN) × (dt_minutes / 60)
+```
+
+Default threshold: `--air-econ-threshold-f 55` (°F). Step-function; uses deduplicated observations.
+
+### Waterside Economizer (WEC) Proxy
+
+Physical temperature chain (screening-level):
+
+```
+Tower delivers:   CWS  ≈ Twb + tower_approach_f
+Plate HX delivers: CHWS ≈ CWS  + hx_approach_f
+
+WEC feasible when: Twb + tower_approach_f + hx_approach_f ≤ chw_supply_f
+
+Therefore:
+  required_twb_max    = chw_supply_f - tower_approach_f - hx_approach_f
+  wec_hours           = count(Twb ≤ required_twb_max AND not NaN) × dt_h
+  hours_with_wetbulb  = count(Twb not NaN) × dt_h
+  wec_feasible_pct    = wec_hours / hours_with_wetbulb
+```
+
+**Default parameters:**
+
+| Parameter | Flag | Default | Meaning |
+|-----------|------|---------|---------|
+| CHW supply | `--chw-supply-f` | 44 °F | Target chilled-water supply temperature |
+| Tower approach | `--tower-approach-f` | 7 °F | Cooling tower approach (LWT − Twb) |
+| HX approach | `--hx-approach-f` | 5 °F | Plate heat-exchanger approach delta |
+
+With defaults: `required_twb_max = 44 − 7 − 5 = 32 °F`.
+
+**Degradation:** if wet-bulb data is unavailable (CSV without dewpoint/RH), `wec_hours` and `wec_feasible_pct` are `NaN`; `hours_with_wetbulb` is `0`.
+
+**Compare-mode window metrics:**
+
+| Column | Definition |
+|--------|-----------|
+| `wec_hours_sum` | Sum of `wec_hours` across years (NaN-safe) |
+| `hours_with_wetbulb_sum` | Sum of `hours_with_wetbulb` across years |
+| `wec_feasible_pct_over_window` | `wec_hours_sum / hours_with_wetbulb_sum` — comparable across stations with differing wetbulb availability |
+
+### Tower Stress Hours
+
+```
+tower_stress_hours_wb_gt_<T> = count(Twb ≥ T  AND  not NaN) × dt_h
+```
+
+Computed for each threshold in `--wetbulb-stress-thresholds-f` (default: `75,78,80` °F). Uses `≥` (inclusive).
+
+### Rolling Wet-Bulb Maxima
+
+```
+1. Sort and index wetbulb series by timestamp (UTC).
+2. Resample to regular round(dt_minutes)-minute grid (mean within bins; NaN for gaps).
+3. Integer-step rolling window: n_steps = round(window_hours × 60 / dt_round)
+4. Completeness guard: min_periods = max(1, int(0.80 × n_steps))
+   — windows with < 80% of expected samples produce NaN.
+5. wb_mean_<W>h_max = max of valid rolling means; NaN if none.
+```
+
+Resampling to a regular grid before rolling ensures stable `min_periods` counts regardless of timestamp irregularity.
+
+### LWT Proxy
+
+```
+lwt_proxy_f     = Twb + tower_approach_f   (per observation)
+lwt_proxy_p99   = 99th percentile of lwt_proxy_f
+lwt_proxy_max   = max of lwt_proxy_f
+```
+
+Actual condenser-water leaving temperature depends on tower specifications, flow rates, and heat load.
+
+### Econ Confidence Flag
+
+`econ_confidence_flag = True` if **any** of the following:
+- `timestamp_missing_pct_avg > 2%`
+- `wetbulb_availability_pct_avg < 70%`
+
+## Freeze Risk Metrics
+
+All freeze metrics use the same **step-function** convention as other hourly metrics. They are computed from dry-bulb temperature only — no wet-bulb data required.
+
+### Core Freeze Math
+
+**Freeze condition (inclusive):**
+```
+is_freeze = Tdb ≤ freeze_threshold_f  AND  Tdb not NaN
+```
+
+**Hour metrics (per year-slice):**
+```
+freeze_hours              = count(is_freeze) × (dt_minutes / 60)
+total_hours_with_temp     = count(Tdb not NaN) × (dt_minutes / 60)
+freeze_hours_pct          = freeze_hours / total_hours_with_temp
+                            (NaN if total_hours_with_temp == 0; missing data ≠ 0% freeze)
+
+freeze_hours_shoulder     = freeze_hours restricted to rows where month ∈ shoulder_months
+```
+
+**Event detection:**
+```
+gap_break_minutes = freeze_gap_tolerance_mult × dt_minutes
+
+A run is broken when ANY of:
+  - consecutive timestamp gap > gap_break_minutes, OR
+  - the observation is NaN (conservative: missing data does not extend freeze events), OR
+  - the observation is not freeze-condition
+
+Event: a freeze run with duration ≥ freeze_min_event_hours
+duration = run_count × (dt_minutes / 60)   (step function)
+
+freeze_event_count               — integer count of qualifying events per year
+freeze_event_max_duration_hours  — max event duration; NaN if count == 0
+```
+
+### Freeze CLI Flags
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--freeze-threshold-f` | `32.0` | Dry-bulb freeze threshold °F (Tdb ≤ this counts as freeze) |
+| `--freeze-min-event-hours` | `3.0` | Minimum continuous hours below threshold for a freeze event |
+| `--freeze-gap-tolerance-mult` | `1.5` | Gap > (mult × dt_minutes) breaks event continuity |
+| `--freeze-shoulder-months` | `3,4,10,11` | Comma-separated month numbers for shoulder-season freeze exposure |
+
+Both the `run` and `compare` commands accept all four flags.
+
+**Example — `run` with custom freeze params:**
+```bash
+weather-tool run \
+  --mode iem --station-id KORD \
+  --start 2018-01-01 --end 2023-12-31 \
+  --ref-temp 65 --fields tmpf,dwpf,relh \
+  --freeze-threshold-f 32 \
+  --freeze-min-event-hours 3 \
+  --freeze-shoulder-months "3,4,10,11"
+```
+
+**Example — `compare` with freeze:**
+```bash
+weather-tool compare KORD KPHX KIAD \
+  --start 2018-01-01 --end 2023-12-31 \
+  --ref-temps 80,85 --fields tmpf,dwpf,relh \
+  --freeze-threshold-f 32
+```
+
+### Yearly Summary Freeze Columns
+
+| Column | Description |
+|--------|-------------|
+| `freeze_threshold_f` | Configured threshold (°F) |
+| `freeze_min_event_hours` | Configured minimum event duration |
+| `freeze_hours` | Hours with Tdb ≤ threshold |
+| `total_hours_with_temp` | Hours with non-NaN Tdb (denominator) |
+| `freeze_hours_pct` | `freeze_hours / total_hours_with_temp` (NaN if no temp data) |
+| `freeze_hours_shoulder` | Freeze hours in shoulder months only |
+| `freeze_event_count` | Number of qualifying freeze events |
+| `freeze_event_max_duration_hours` | Longest freeze event (h); NaN if none |
+
+### Compare-Mode Window Freeze Columns
+
+| Column | Aggregation | Description |
+|--------|-------------|-------------|
+| `freeze_hours_sum` | sum | Total freeze hours over the analysis window |
+| `freeze_hours_shoulder_sum` | sum | Shoulder-season freeze hours over the window |
+| `total_hours_with_temp_sum` | sum | Total hours with valid Tdb (denominator for pct) |
+| `freeze_hours_pct_over_window` | `sum/sum` | Window-level freeze fraction (NaN if denominator = 0) |
+| `freeze_event_count_sum` | sum | Total qualifying freeze events across all years |
+| `freeze_event_max_duration_hours_max` | max | Longest single freeze event across all years |
+| `freeze_confidence_flag` | flag | `True` if temp availability < 90% of actual window hours, or missing% > 2% |
+
+**`freeze_confidence_flag` detail:**
+
+The denominator uses actual window hours derived from the date range in the yearly summary (`window_start.min()` → `window_end.max() + 1 day`), rather than a calendar approximation. A station with `total_hours_with_temp_sum / window_hours < 0.90` gets a low-confidence flag.
+
 ## Running Tests
 
 ```bash
@@ -219,7 +401,9 @@ weather_tool/
       normalize.py      # Timestamp normalization, dedup
       quality.py        # Data quality checks + per-field NaN counts
       metrics.py        # Interval inference, hours_above_ref, compute_wetbulb_f
-      aggregate.py      # Yearly summary builder (wb percentiles)
+      aggregate.py      # Yearly summary builder (wb percentiles, freeze)
+      econ_tower.py     # Economizer / tower stress metrics
+      freeze.py         # Freeze risk metrics (pure functions)
     insights/
       deterministic.py  # Rankings, trends, Moisture/Tower Stress section
       llm.py            # Optional LLM narrative
@@ -232,4 +416,6 @@ weather_tool/
     test_yearly_summary.py
     test_wetbulb.py
     test_iem_url.py
+    test_econ_tower.py
+    test_freeze.py
 ```

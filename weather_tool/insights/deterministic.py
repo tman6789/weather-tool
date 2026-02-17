@@ -183,10 +183,22 @@ def generate_insights_md(
     if "wec_hours" in summary.columns and summary["wec_hours"].notna().any():
         req_twb = float(summary["required_twb_max"].iloc[0])
         wec_total = float(summary["wec_hours"].dropna().sum())
+        hwb_total = (
+            float(summary["hours_with_wetbulb"].sum())
+            if "hours_with_wetbulb" in summary.columns
+            else float("nan")
+        )
+        window_pct_str = (
+            f" ({wec_total / hwb_total * 100:.1f}% of wetbulb hours)"
+            if not pd.isna(hwb_total) and hwb_total > 0
+            else ""
+        )
         top_wec = summary.dropna(subset=["wec_hours"]).nlargest(3, "wec_hours")
-        lines.append(f"**WEC proxy (Twb ≤ {req_twb:.1f} °F):** {wec_total:.0f} hrs total")
+        lines.append(
+            f"**WEC proxy (Twb ≤ {req_twb:.1f} °F):** {wec_total:.0f} hrs total{window_pct_str}"
+        )
         for _, r in top_wec.iterrows():
-            feas = r.get("wec_feasibility_pct")
+            feas = r.get("wec_feasible_pct")
             pct = f" ({feas*100:.1f}%)" if pd.notna(feas) else ""
             lines.append(f"- **{int(r['year'])}**: {r['wec_hours']:.0f} hrs{pct}")
         lines.append("")
@@ -221,6 +233,54 @@ def generate_insights_md(
             f"**LWT proxy (Twb + approach):** p99 = {lwt_p99:.1f} °F, max = {lwt_max_str}"
             f"  *(proxy — actual LWT depends on tower specs)*"
         )
+        lines.append("")
+
+    # ── Freeze Risk ──
+    lines.append("## Freeze Risk")
+    lines.append("")
+    lines.append(
+        f"> *Dry-bulb threshold: {cfg.freeze_threshold_f} °F (Tdb ≤ threshold). "
+        f"Events: continuous runs ≥ {cfg.freeze_min_event_hours} h "
+        f"(gap tolerance: {cfg.freeze_gap_tolerance_mult}× dt). "
+        f"Shoulder months: {sorted(cfg.freeze_shoulder_months)}.*"
+    )
+    lines.append("")
+
+    if "freeze_hours" in summary.columns and summary["freeze_hours"].notna().any():
+        frz_total = float(summary["freeze_hours"].dropna().sum())
+        frz_shoulder = (
+            float(summary["freeze_hours_shoulder"].dropna().sum())
+            if "freeze_hours_shoulder" in summary.columns
+            else float("nan")
+        )
+        worst_yr_idx = summary["freeze_hours"].idxmax()
+        worst_yr = int(summary.loc[worst_yr_idx, "year"])
+        worst_hrs = float(summary.loc[worst_yr_idx, "freeze_hours"])
+        lines.append(
+            f"**Total freeze hours (Tdb ≤ {cfg.freeze_threshold_f} °F):** {frz_total:.0f} hrs"
+        )
+        if not pd.isna(frz_shoulder):
+            lines.append(
+                f"**Shoulder-season freeze hours (months {sorted(cfg.freeze_shoulder_months)}):**"
+                f" {frz_shoulder:.0f} hrs"
+            )
+        lines.append(f"**Worst year:** {worst_yr} — {worst_hrs:.0f} hrs")
+        lines.append("")
+
+        if "freeze_event_count" in summary.columns:
+            ev_total = int(summary["freeze_event_count"].fillna(0).sum())
+            lines.append(f"**Freeze events (≥ {cfg.freeze_min_event_hours} h):** {ev_total} total")
+            if (
+                "freeze_event_max_duration_hours" in summary.columns
+                and summary["freeze_event_max_duration_hours"].notna().any()
+            ):
+                ev_max = float(summary["freeze_event_max_duration_hours"].dropna().max())
+                ev_max_yr_idx = summary["freeze_event_max_duration_hours"].idxmax()
+                ev_max_yr = int(summary.loc[ev_max_yr_idx, "year"])
+                lines.append(f"**Longest freeze event:** {ev_max:.1f} h (year {ev_max_yr})")
+            lines.append("")
+    else:
+        lines.append("_Freeze hours not computed (no temperature data)._")
         lines.append("")
 
     # ── Data quality notes ──

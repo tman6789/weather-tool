@@ -34,6 +34,8 @@ HX_APPROACH_F: float = 5.0          # heat-exchanger approach delta (WEC proxy)
 CHW_SUPPLY_F: float = 44.0
 WB_STRESS_THRESHOLDS_F: list[float] = [75.0, 78.0, 80.0]
 ROLLING_COMPLETENESS_MIN_FRAC: float = 0.80
+ECON_WB_COVERAGE_MIN_FRAC: float = 0.90  # min wetbulb coverage for high-confidence econ flag
+FREEZE_CONFIDENCE_TEMP_AVAIL_MIN_FRAC: float = 0.90  # min temp availability for high-confidence freeze flag
 
 IEM_UNITS: dict[str, str] = {
     "tmpf": "F",
@@ -78,6 +80,12 @@ class RunConfig:
     # tower_range_f: float = 10.0       # reserved — not yet used in any metric
     chw_supply_f: float = 44.0
     wb_stress_thresholds_f: list[float] = field(default_factory=lambda: [75.0, 78.0, 80.0])
+
+    # Freeze risk params
+    freeze_threshold_f: float = 32.0
+    freeze_min_event_hours: float = 3.0
+    freeze_gap_tolerance_mult: float = 1.5
+    freeze_shoulder_months: list[int] = field(default_factory=lambda: [3, 4, 10, 11])
 
     def validate(self) -> None:
         """Raise ValueError on invalid config combinations."""

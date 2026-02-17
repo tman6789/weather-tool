@@ -132,6 +132,8 @@ def generate_compare_report_md(
     econ_specs: list[tuple[str, str]] = []
     if "air_econ_hours_sum" in compare_df.columns:
         econ_specs.append(("air_econ_hours_sum", "Airside Economizer Hours (descending = more econ potential)"))
+    if "wec_feasible_pct_over_window" in compare_df.columns:
+        econ_specs.append(("wec_feasible_pct_over_window", "WEC Feasibility % over Window (descending = more feasible)"))
     if "wec_hours_sum" in compare_df.columns:
         econ_specs.append(("wec_hours_sum", "Waterside Econ Proxy Hours (descending = more WEC potential)"))
     for sc in sorted([c for c in compare_df.columns if c.startswith("tower_stress_hours_wb_gt_") and c.endswith("_sum")]):
@@ -165,18 +167,72 @@ def generate_compare_report_md(
                 lines.append(f"- **{r['station_id']}**")
             lines.append("")
 
+    # ── Freeze Risk Rankings ──────────────────────────────────────────────────
+    freeze_rank_specs: list[tuple[str, str]] = []
+    if "freeze_hours_sum" in compare_df.columns:
+        freeze_rank_specs.append(
+            ("freeze_hours_sum", "Freeze Hours (descending = more freeze exposure)")
+        )
+    if "freeze_hours_shoulder_sum" in compare_df.columns:
+        freeze_rank_specs.append(
+            ("freeze_hours_shoulder_sum", "Shoulder-Season Freeze Hours (descending)")
+        )
+    if "freeze_event_max_duration_hours_max" in compare_df.columns:
+        freeze_rank_specs.append(
+            ("freeze_event_max_duration_hours_max", "Longest Freeze Event (h, descending)")
+        )
+
+    if freeze_rank_specs:
+        lines += ["## Freeze Risk Rankings", ""]
+        for col, label in freeze_rank_specs:
+            if compare_df[col].isna().all():
+                continue
+            lines += [f"### {label}", ""]
+            ranked = (
+                compare_df[["station_id", col]]
+                .sort_values(col, ascending=False)
+                .reset_index(drop=True)
+            )
+            for i, (_, r) in enumerate(ranked.iterrows(), 1):
+                val = r[col]
+                val_str = f"{float(val):.1f}" if not pd.isna(val) else "N/A"
+                lines.append(f"{i}. **{r['station_id']}** — {val_str}")
+            lines.append("")
+
+        if "freeze_confidence_flag" in compare_df.columns and compare_df["freeze_confidence_flag"].any():
+            lines += ["**Low-confidence freeze metrics (missing data):**", ""]
+            for _, r in compare_df[compare_df["freeze_confidence_flag"]].iterrows():
+                lines.append(f"- **{r['station_id']}**")
+            lines.append("")
+
     # ── Full comparison table ─────────────────────────────────────────────────
     lines += ["## Comparison Table", ""]
     # Show a curated subset of columns for readability
     econ_display = [
         c for c in compare_df.columns
-        if c in ("air_econ_hours_sum", "wec_hours_sum", "wb_mean_72h_max_max", "lwt_proxy_p99_median")
+        if c in (
+            "air_econ_hours_sum",
+            "wec_feasible_pct_over_window",
+            "wec_hours_sum",
+            "hours_with_wetbulb_sum",
+            "wb_mean_72h_max_max",
+            "lwt_proxy_p99_median",
+        )
+    ]
+    freeze_display = [
+        c for c in compare_df.columns
+        if c in (
+            "freeze_hours_sum",
+            "freeze_hours_shoulder_sum",
+            "freeze_event_count_sum",
+            "freeze_event_max_duration_hours_max",
+        )
     ]
     display_cols = [c for c in [
         "station_id", "years_covered_count", "tmax_max", "tmin_min",
         "t_p99_median", "wb_p99_median",
         *[c for c in compare_df.columns if c.startswith("hours_above_ref_") and c.endswith("_sum")],
-        "freeze_hours_sum",
+        *freeze_display,
         *econ_display,
         "heat_score", "moisture_score", "freeze_score", "data_quality_score", "overall_score",
         "coverage_weighted_pct", "timestamp_missing_pct_avg", "missing_data_warning",

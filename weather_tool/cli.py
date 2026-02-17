@@ -39,10 +39,15 @@ def run(
     hx_approach_f: float = typer.Option(5.0, "--hx-approach-f", help="Heat-exchanger approach delta (°F) for WEC proxy (required_twb_max = chw_supply - tower_approach - hx_approach)."),
     chw_supply_f: float = typer.Option(44.0, "--chw-supply-f", help="Chilled water supply temperature (°F) for WEC proxy."),
     wb_stress_thresholds: str = typer.Option("75,78,80", "--wetbulb-stress-thresholds-f", help="Comma-separated wet-bulb thresholds (°F) for tower stress hours."),
+    freeze_threshold_f: float = typer.Option(32.0, "--freeze-threshold-f", help="Dry-bulb freeze threshold (°F); Tdb <= this counts as freeze."),
+    freeze_min_event_hours: float = typer.Option(3.0, "--freeze-min-event-hours", help="Minimum continuous hours below threshold to count as a freeze event."),
+    freeze_gap_tolerance_mult: float = typer.Option(1.5, "--freeze-gap-tolerance-mult", help="Gap > (mult * dt_minutes) breaks event continuity."),
+    freeze_shoulder_months: str = typer.Option("3,4,10,11", "--freeze-shoulder-months", help="Comma-separated month numbers for shoulder-season exposure (e.g. 3,4,10,11)."),
 ) -> None:
     """Run a weather analysis pipeline."""
     fields_list = [f.strip() for f in fields.split(",") if f.strip()]
     wb_stress_list = [float(t.strip()) for t in wb_stress_thresholds.split(",") if t.strip()]
+    shoulder_months_list = [int(m.strip()) for m in freeze_shoulder_months.split(",") if m.strip()]
     cfg = RunConfig(
         mode=mode,
         input_path=input,
@@ -63,6 +68,10 @@ def run(
         hx_approach_f=hx_approach_f,
         chw_supply_f=chw_supply_f,
         wb_stress_thresholds_f=wb_stress_list,
+        freeze_threshold_f=freeze_threshold_f,
+        freeze_min_event_hours=freeze_min_event_hours,
+        freeze_gap_tolerance_mult=freeze_gap_tolerance_mult,
+        freeze_shoulder_months=shoulder_months_list,
     )
     cfg.validate()
 
@@ -144,6 +153,10 @@ def compare(
     hx_approach_f: float = typer.Option(5.0, "--hx-approach-f", help="Heat-exchanger approach delta (°F) for WEC proxy."),
     chw_supply_f: float = typer.Option(44.0, "--chw-supply-f", help="Chilled water supply temperature (°F) for WEC proxy."),
     wb_stress_thresholds: str = typer.Option("75,78,80", "--wetbulb-stress-thresholds-f", help="Comma-separated wet-bulb thresholds (°F) for tower stress hours."),
+    freeze_threshold_f: float = typer.Option(32.0, "--freeze-threshold-f", help="Dry-bulb freeze threshold (°F); Tdb <= this counts as freeze."),
+    freeze_min_event_hours: float = typer.Option(3.0, "--freeze-min-event-hours", help="Minimum continuous hours below threshold to count as a freeze event."),
+    freeze_gap_tolerance_mult: float = typer.Option(1.5, "--freeze-gap-tolerance-mult", help="Gap > (mult * dt_minutes) breaks event continuity."),
+    freeze_shoulder_months: str = typer.Option("3,4,10,11", "--freeze-shoulder-months", help="Comma-separated month numbers for shoulder-season exposure (e.g. 3,4,10,11)."),
 ) -> None:
     """Compare climate metrics across multiple stations."""
     from weather_tool.core.compare import build_compare_summary
@@ -154,6 +167,7 @@ def compare(
     ref_temps_list = [float(t.strip()) for t in ref_temps.split(",") if t.strip()]
     fields_list = [f.strip() for f in fields.split(",") if f.strip()]
     wb_stress_list = [float(t.strip()) for t in wb_stress_thresholds.split(",") if t.strip()]
+    shoulder_months_list = [int(m.strip()) for m in freeze_shoulder_months.split(",") if m.strip()]
     start_date = date.fromisoformat(start)
     end_date = date.fromisoformat(end)
 
@@ -179,6 +193,10 @@ def compare(
             hx_approach_f=hx_approach_f,
             chw_supply_f=chw_supply_f,
             wb_stress_thresholds_f=wb_stress_list,
+            freeze_threshold_f=freeze_threshold_f,
+            freeze_min_event_hours=freeze_min_event_hours,
+            freeze_gap_tolerance_mult=freeze_gap_tolerance_mult,
+            freeze_shoulder_months=shoulder_months_list,
         )
         cfg.validate()
         result = run_station_pipeline(cfg, echo=verbose)

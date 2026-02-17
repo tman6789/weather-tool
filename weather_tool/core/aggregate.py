@@ -12,13 +12,13 @@ import numpy as np
 import pandas as pd
 
 from weather_tool.config import (
-    FREEZE_THRESHOLD_F,
     PARTIAL_COVERAGE_THRESHOLD,
     ROLLING_COMPLETENESS_MIN_FRAC,
     RunConfig,
 )
 from weather_tool.core.econ_tower import compute_econ_tower_yearly
-from weather_tool.core.metrics import hours_above_ref
+from weather_tool.core.freeze import compute_freeze_yearly
+from weather_tool.core.metrics import hours_above_ref, infer_interval
 from weather_tool.core.quality import compute_quality
 
 
@@ -102,26 +102,40 @@ def build_yearly_summary(
         slice_start, slice_end = _year_slice_bounds(yr, cfg.start, cfg.end, cfg.tz)
         yr_df = df[df["_year"] == yr].copy()
 
+        # Hours above ref — use deduplicated rows
+        dedup = yr_df[~yr_df["_is_dup"]]
+
+        # Per-year effective dt: when the interval changed, re-infer on this year's
+        # deduplicated timestamps so that metrics are scaled correctly.  Fall back to
+        # the global median when the year has too few observations to infer reliably.
+        if interval_change_flag and len(dedup) >= 2:
+            yr_info = infer_interval(dedup["timestamp"])
+            effective_dt = (
+                yr_info["dt_minutes"]
+                if not math.isnan(yr_info["dt_minutes"])
+                else dt_minutes
+            )
+        else:
+            effective_dt = dt_minutes
+
         # Quality metrics
-        quality = compute_quality(yr_df, slice_start, slice_end, dt_minutes, interval_change_flag)
+        quality = compute_quality(yr_df, slice_start, slice_end, effective_dt, interval_change_flag)
 
         # Temp metrics (on non-dup rows only for uniqueness; but temp extremes use all)
         valid_temps = yr_df["temp"].dropna()
         tmax = float(valid_temps.max()) if len(valid_temps) > 0 else float("nan")
         tmin = float(valid_temps.min()) if len(valid_temps) > 0 else float("nan")
 
-        # Hours above ref — use deduplicated rows
-        dedup = yr_df[~yr_df["_is_dup"]]
-        hab = hours_above_ref(dedup["temp"], cfg.ref_temp, dt_minutes)
+        hab = hours_above_ref(dedup["temp"], cfg.ref_temp, effective_dt)
 
         # Dry-bulb percentiles
         dedup_temps = dedup["temp"].dropna()
         t_p99 = float(np.percentile(dedup_temps, 99)) if len(dedup_temps) > 0 else float("nan")
         t_p996 = float(np.percentile(dedup_temps, 99.6)) if len(dedup_temps) > 0 else float("nan")
 
-        # Cooling degree hours and freeze hours
-        cdh = cooling_degree_hours(dedup["temp"], cfg.ref_temp, dt_minutes)
-        freeze_hrs = hours_above_ref(-dedup["temp"], -FREEZE_THRESHOLD_F, dt_minutes)
+        # Cooling degree hours and freeze metrics
+        cdh = cooling_degree_hours(dedup["temp"], cfg.ref_temp, effective_dt)
+        freeze_row = compute_freeze_yearly(dedup, effective_dt, cfg)
 
         # Wet-bulb percentiles (only if wetbulb_f column present)
         wb_row: dict[str, Any] = {}
@@ -133,7 +147,7 @@ def build_yearly_summary(
                 wb_row["wb_max"] = round(float(wb_valid.max()), 2)
                 wb_row["wb_mean"] = round(float(wb_valid.mean()), 2)
                 wb_row["hours_wb_above_ref"] = round(
-                    hours_above_ref(dedup["wetbulb_f"], cfg.ref_temp, dt_minutes), 2
+                    hours_above_ref(dedup["wetbulb_f"], cfg.ref_temp, effective_dt), 2
                 )
             else:
                 wb_row["wb_p99"] = None
@@ -145,7 +159,7 @@ def build_yearly_summary(
         # Economizer / tower metrics
         econ_row = compute_econ_tower_yearly(
             dedup=dedup,
-            dt_minutes=dt_minutes,
+            dt_minutes=effective_dt,
             air_econ_threshold_f=cfg.air_econ_threshold_f,
             chw_supply_f=cfg.chw_supply_f,
             tower_approach_f=cfg.tower_approach_f,
@@ -163,14 +177,14 @@ def build_yearly_summary(
                 "year": yr,
                 "window_start": slice_start.date(),
                 "window_end": slice_end.date(),
-                "dt_minutes": round(dt_minutes, 2),
+                "dt_minutes": round(effective_dt, 2),
                 "tmax": round(tmax, 2) if not np.isnan(tmax) else None,
                 "tmin": round(tmin, 2) if not np.isnan(tmin) else None,
                 "hours_above_ref": round(hab, 2),
                 "t_p99": round(t_p99, 2) if not np.isnan(t_p99) else None,
                 "t_p996": round(t_p996, 2) if not np.isnan(t_p996) else None,
                 "cooling_degree_hours": round(cdh, 2),
-                "hours_below_32": round(freeze_hrs, 2),
+                **freeze_row,
                 "ref_temp": cfg.ref_temp,
                 **wb_row,
                 **econ_row,

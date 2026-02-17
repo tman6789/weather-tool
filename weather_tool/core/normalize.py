@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import date, datetime, timezone
+from datetime import date
 
 import pandas as pd
 
@@ -37,12 +37,8 @@ def filter_window(
     tz: str = "UTC",
 ) -> pd.DataFrame:
     """Return rows whose timestamp falls within [start, end] inclusive (full days)."""
-    tz_obj = timezone.utc if tz == "UTC" else None
-    # Build tz-aware boundaries
-    ts_start = pd.Timestamp(datetime(start.year, start.month, start.day), tz=tz)
-    ts_end = pd.Timestamp(
-        datetime(end.year, end.month, end.day, 23, 59, 59), tz=tz
-    )
+    ts_start = pd.Timestamp(start.isoformat()).tz_localize(tz)
+    ts_end = pd.Timestamp(f"{end.isoformat()} 23:59:59").tz_localize(tz)
     mask = (df["timestamp"] >= ts_start) & (df["timestamp"] <= ts_end)
     return df.loc[mask].reset_index(drop=True)
 
