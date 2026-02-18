@@ -96,6 +96,7 @@ class RunConfig:
     wind_event_metric: str = "wetbulb"       # "tdb" or "wetbulb"
     wind_event_thresholds: list[str] = field(default_factory=lambda: ["p99"])
     wind_event_min_hours: float = 0.0
+    wind_gap_tolerance_mult: float = 1.5
 
     def validate(self) -> None:
         """Raise ValueError on invalid config combinations."""

@@ -300,6 +300,7 @@ def detect_exceedance_runs(
         return [], event_mask
 
     events: list[dict[str, Any]] = []
+    qualifying_indices: list[int] = []
     run_indices: list[int] = []
     prev_ts = None
 
@@ -313,8 +314,7 @@ def detect_exceedance_runs(
                 "end_ts": ts_arr.iloc[run_indices[-1]],
                 "duration_hours": round(duration, 2),
             })
-            for idx in run_indices:
-                event_mask.iloc[orig_idx.get_loc(orig_idx[idx]) if hasattr(orig_idx, 'get_loc') else idx] = True
+            qualifying_indices.extend(run_indices)
 
     for i in range(n):
         raw = m_arr.iloc[i]
@@ -336,12 +336,10 @@ def detect_exceedance_runs(
 
     _flush_run()
 
-    # Rebuild event_mask with original index
-    mask_values = [False] * n
-    for ev in events:
-        for i in range(n):
-            if ts_arr.iloc[i] >= ev["start_ts"] and ts_arr.iloc[i] <= ev["end_ts"]:
-                mask_values[i] = True
+    # Build mask from collected qualifying indices (O(n), not O(n*events))
+    mask_values = np.zeros(n, dtype=bool)
+    for idx in qualifying_indices:
+        mask_values[idx] = True
     event_mask = pd.Series(mask_values, index=orig_idx)
 
     return events, event_mask
@@ -395,18 +393,12 @@ def compute_event_wind_stats(
 
     dt_h = dt_minutes / 60.0
 
-    if min_event_hours == 0:
-        # All rows where metric >= threshold (and not NaN)
-        mask = df[metric_col].notna() & (df[metric_col] >= threshold_value)
-        event_df = df[mask].reset_index(drop=True)
-        event_count = 1 if len(event_df) > 0 else 0
-    else:
-        events, event_mask = detect_exceedance_runs(
-            df["timestamp"], df[metric_col],
-            threshold_value, dt_minutes, min_event_hours, gap_tolerance_mult,
-        )
-        event_df = df[event_mask].reset_index(drop=True)
-        event_count = len(events)
+    events, event_mask = detect_exceedance_runs(
+        df["timestamp"], df[metric_col],
+        threshold_value, dt_minutes, min_event_hours, gap_tolerance_mult,
+    )
+    event_df = df[event_mask].reset_index(drop=True)
+    event_count = len(events)
 
     if len(event_df) == 0:
         return empty_result

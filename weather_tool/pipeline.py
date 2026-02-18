@@ -152,7 +152,7 @@ def run_station_pipeline(cfg: RunConfig, echo: bool = False) -> StationResult:
                         metric_col, thr_value, interval_info["dt_minutes"],
                         dir_bins=cfg.wind_dir_bins,
                         min_event_hours=cfg.wind_event_min_hours,
-                        gap_tolerance_mult=cfg.freeze_gap_tolerance_mult,
+                        gap_tolerance_mult=cfg.wind_gap_tolerance_mult,
                     )
 
                     # Sector deltas vs baseline

@@ -69,10 +69,11 @@ def compute_quality(
     if extra_fields is None:
         extra_fields = [f for f in _TRACKABLE_FIELDS if f in df.columns]
 
+    dedup_for_fields = df.loc[~df["_is_dup"]]
     for field in extra_fields:
         if field not in df.columns:
             continue
-        nan_count = int(df[field].isna().sum())
+        nan_count = int(dedup_for_fields[field].isna().sum())
         result[f"nan_count_{field}"] = nan_count
         result[f"field_missing_pct_{field}"] = round(
             nan_count / n_unique_timestamps if n_unique_timestamps > 0 else 0.0,

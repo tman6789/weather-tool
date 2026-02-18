@@ -152,7 +152,7 @@ def compute_wetbulb_f(df: pd.DataFrame) -> pd.Series:
 
     # --- relative humidity ---
     if "relh" in df.columns:
-        rh = pd.to_numeric(df["relh"], errors="coerce")
+        rh = pd.to_numeric(df["relh"], errors="coerce").clip(0.0, 100.0)
     elif "dwpf" in df.columns:
         # Magnus approximation: RH = 100 · e_s(Td) / e_s(T)
         td_f = pd.to_numeric(df["dwpf"], errors="coerce")

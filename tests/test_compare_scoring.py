@@ -1,4 +1,4 @@
-"""Tests for min-max scoring in core/compare.py."""
+"""Tests for min-max scoring in core/compare_scores.py."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from weather_tool.core.compare import _minmax_norm, compute_scores
+from weather_tool.core.compare_scores import _minmax_norm, compute_scores
 
 
 # ── _minmax_norm ──────────────────────────────────────────────────────────────

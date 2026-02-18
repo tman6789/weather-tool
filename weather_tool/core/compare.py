@@ -11,12 +11,10 @@ from weather_tool.config import (
     ECON_WB_COVERAGE_MIN_FRAC,
     FREEZE_CONFIDENCE_TEMP_AVAIL_MIN_FRAC,
     FREEZE_THRESHOLD_F,
-    FREEZE_SCORE_WEIGHTS,
-    HEAT_SCORE_WEIGHTS,
     MISSING_DATA_WARNING_THRESHOLD,
-    SCORE_WEIGHTS,
     WETBULB_AVAIL_WARNING_THRESHOLD,
 )
+from weather_tool.core.compare_scores import compute_scores
 from weather_tool.core.metrics import hours_above_ref
 
 if TYPE_CHECKING:
@@ -47,6 +45,35 @@ def aggregate_station_window(
     dt = interval_info["dt_minutes"]
     row: dict[str, Any] = {"station_id": station_id}
 
+    # Guard: empty summary (no data in the analysis window) — return a sentinel
+    # row so the compare DataFrame can still be assembled without crashing.
+    if len(summary) == 0:
+        sentinel: dict[str, Any] = {
+            "station_id": station_id,
+            "years_covered_count": 0,
+            "dt_minutes_median": float("nan"),
+            "coverage_weighted_pct": float("nan"),
+            "partial_coverage_years_count": 0,
+            "timestamp_missing_pct_avg": float("nan"),
+            "interval_change_flag_any": False,
+            "tmax_max": float("nan"),
+            "tmin_min": float("nan"),
+            "freeze_hours_sum": 0.0,
+            "freeze_hours_shoulder_sum": 0.0,
+            "total_hours_with_temp_sum": 0.0,
+            "freeze_hours_pct_over_window": float("nan"),
+            "freeze_event_count_sum": 0,
+            "freeze_event_max_duration_hours_max": float("nan"),
+            "freeze_confidence_flag": True,
+            "econ_confidence_flag": True,
+            "missing_data_warning": True,
+        }
+        for rt in ref_temps:
+            rt_key = int(rt)
+            sentinel[f"hours_above_ref_{rt_key}_sum"] = 0.0
+            sentinel[f"cooling_degree_hours_{rt_key}_sum"] = 0.0
+        return sentinel
+
     # Coverage / completeness
     row["years_covered_count"] = int(len(summary))
     row["dt_minutes_median"] = float(np.nanmedian(summary["dt_minutes"].astype(float)))
@@ -75,18 +102,28 @@ def aggregate_station_window(
     if "t_p996" in summary.columns and summary["t_p996"].notna().any():
         row["t_p996_median"] = float(np.nanmedian(summary["t_p996"].astype(float)))
 
-    # Hours above ref and CDH for each requested threshold (recompute from windowed series)
-    dedup = windowed.loc[~windowed["_is_dup"]]
+    # Hours above ref and CDH for each requested threshold — use per-year dt
+    # from the summary so that mixed-interval stations get correct hour counts.
+    dedup = windowed.loc[~windowed["_is_dup"]].copy()
+    dedup["_year"] = dedup["timestamp"].dt.year
+
+    dt_by_year: dict[int, float] = {}
+    for _, yr_row in summary.iterrows():
+        yr_dt = float(yr_row["dt_minutes"])
+        dt_by_year[int(yr_row["year"])] = dt if np.isnan(yr_dt) else yr_dt
+
     for rt in ref_temps:
         rt_key = int(rt)
-        row[f"hours_above_ref_{rt_key}_sum"] = round(
-            hours_above_ref(dedup["temp"], rt, dt), 2
-        )
-        excess = (dedup["temp"].dropna() - rt).clip(lower=0.0)
-        row[f"cooling_degree_hours_{rt_key}_sum"] = round(
-            float(excess.sum() * (dt / 60.0)) if not (np.isnan(dt) or dt <= 0) else 0.0,
-            2,
-        )
+        hab_total = 0.0
+        cdh_total = 0.0
+        for yr, yr_dedup in dedup.groupby("_year"):
+            yr_dt = dt_by_year.get(int(yr), dt)
+            hab_total += hours_above_ref(yr_dedup["temp"], rt, yr_dt)
+            if not (np.isnan(yr_dt) or yr_dt <= 0):
+                excess = (yr_dedup["temp"].dropna() - rt).clip(lower=0.0)
+                cdh_total += float(excess.sum() * (yr_dt / 60.0))
+        row[f"hours_above_ref_{rt_key}_sum"] = round(hab_total, 2)
+        row[f"cooling_degree_hours_{rt_key}_sum"] = round(cdh_total, 2)
 
     # Freeze hours — prefer new column, fall back to legacy name, then direct computation
     if "freeze_hours" in summary.columns:
@@ -204,17 +241,21 @@ def aggregate_station_window(
     mpa_econ = row.get("timestamp_missing_pct_avg", float("nan"))
     wba_econ = row.get("wetbulb_availability_pct_avg", float("nan"))
     cov_econ = row.get("coverage_weighted_pct", float("nan"))
-    yrs_econ = row.get("years_covered_count", 0)
     hwb_econ = row.get("hours_with_wetbulb_sum", float("nan"))
-    # Estimate max possible wetbulb hours from years × 8760 × avg coverage
-    if yrs_econ > 0 and not np.isnan(cov_econ):
-        max_possible_hours = yrs_econ * 8760.0 * cov_econ
-        low_wb_coverage = (
-            not np.isnan(hwb_econ) and max_possible_hours > 0
-            and (hwb_econ / max_possible_hours) < ECON_WB_COVERAGE_MIN_FRAC
-        )
-    else:
-        low_wb_coverage = False
+    # Compute max possible hours from actual window dates (leap-year safe),
+    # mirroring the freeze confidence block above.
+    low_wb_coverage = False
+    if (
+        "window_start" in summary.columns
+        and "window_end" in summary.columns
+        and len(summary) > 0
+    ):
+        econ_win_start = pd.Timestamp(str(summary["window_start"].min()))
+        econ_win_end = pd.Timestamp(str(summary["window_end"].max())) + pd.Timedelta(days=1)
+        max_possible_hours = (econ_win_end - econ_win_start).total_seconds() / 3600.0
+        if max_possible_hours > 0 and not np.isnan(cov_econ) and not np.isnan(hwb_econ):
+            adjusted_hours = max_possible_hours * cov_econ
+            low_wb_coverage = (hwb_econ / adjusted_hours) < ECON_WB_COVERAGE_MIN_FRAC
     row["econ_confidence_flag"] = bool(
         (not np.isnan(mpa_econ) and mpa_econ > MISSING_DATA_WARNING_THRESHOLD)
         or (not np.isnan(wba_econ) and wba_econ < WETBULB_AVAIL_WARNING_THRESHOLD)
@@ -238,95 +279,6 @@ def aggregate_station_window(
     )
 
     return row
-
-
-def _minmax_norm(series: pd.Series, invert: bool = False) -> pd.Series:
-    """Min-max normalize *series* to [0, 100]. Returns 50 for all-equal series."""
-    lo = float(series.min())
-    hi = float(series.max())
-    if hi == lo:
-        return pd.Series(50.0, index=series.index, dtype=float)
-    result = (series - lo) / (hi - lo) * 100.0
-    return (100.0 - result) if invert else result
-
-
-def compute_scores(df: pd.DataFrame, ref_temps: list[float]) -> pd.DataFrame:
-    """Add heat/moisture/freeze/quality/overall score columns to a copy of *df*.
-
-    Scores are min-max normalized across stations to [0, 100].
-    Higher = more of that characteristic (more heat, more moisture, more freeze risk, better quality).
-    """
-    out = df.copy()
-
-    # Primary ref temp = max threshold (highest threshold captures hottest stations)
-    primary_rt = int(max(ref_temps))
-    primary_col = f"hours_above_ref_{primary_rt}_sum"
-
-    # ── heat_score ────────────────────────────────────────────────────────────
-    h_hours_raw = out[primary_col].fillna(0.0) if primary_col in out.columns else pd.Series(0.0, index=out.index)
-    h_t99_raw = out["t_p99_median"].fillna(out["t_p99_median"].mean()) if "t_p99_median" in out.columns else pd.Series(0.0, index=out.index)
-    h_hours = _minmax_norm(h_hours_raw)
-    h_t99 = _minmax_norm(h_t99_raw)
-    out["heat_score"] = (
-        HEAT_SCORE_WEIGHTS["hours_above_ref"] * h_hours
-        + HEAT_SCORE_WEIGHTS["t_p99"] * h_t99
-    ).round(1)
-
-    # ── moisture_score ────────────────────────────────────────────────────────
-    if "wb_p99_median" in out.columns and out["wb_p99_median"].notna().any():
-        wb_filled = out["wb_p99_median"].fillna(float(out["wb_p99_median"].mean()))
-        out["moisture_score"] = _minmax_norm(wb_filled).round(1)
-    else:
-        out["moisture_score"] = float("nan")
-
-    # ── freeze_score ──────────────────────────────────────────────────────────
-    f_hrs_raw = out["freeze_hours_sum"].fillna(0.0) if "freeze_hours_sum" in out.columns else pd.Series(0.0, index=out.index)
-    f_tmin_raw = out["tmin_min"].fillna(float(out["tmin_min"].mean())) if "tmin_min" in out.columns else pd.Series(0.0, index=out.index)
-    f_hrs = _minmax_norm(f_hrs_raw)
-    f_tmin = _minmax_norm(f_tmin_raw, invert=True)  # lower tmin = more freeze risk = higher score
-    out["freeze_score"] = (
-        FREEZE_SCORE_WEIGHTS["freeze_hours"] * f_hrs
-        + FREEZE_SCORE_WEIGHTS["tmin_min"] * f_tmin
-    ).round(1)
-
-    # ── data_quality_score ────────────────────────────────────────────────────
-    q_missing_raw = out["timestamp_missing_pct_avg"].fillna(0.0) if "timestamp_missing_pct_avg" in out.columns else pd.Series(0.0, index=out.index)
-    q_cov_raw = out["coverage_weighted_pct"].fillna(1.0) if "coverage_weighted_pct" in out.columns else pd.Series(1.0, index=out.index)
-    q_icf_raw = out["interval_change_flag_any"].astype(float) if "interval_change_flag_any" in out.columns else pd.Series(0.0, index=out.index)
-
-    q_missing = _minmax_norm(q_missing_raw, invert=True)
-    q_cov = _minmax_norm(q_cov_raw)
-    q_icf = _minmax_norm(q_icf_raw, invert=True)
-
-    if "wetbulb_availability_pct_avg" in out.columns:
-        q_wb = _minmax_norm(out["wetbulb_availability_pct_avg"].fillna(50.0))
-        out["data_quality_score"] = (
-            0.40 * q_missing + 0.20 * q_cov + 0.30 * q_wb + 0.10 * q_icf
-        ).round(1)
-    else:
-        # No wet-bulb availability data — use neutral 50 for that component
-        out["data_quality_score"] = (
-            0.40 * q_missing + 0.20 * q_cov + pd.Series(50.0 * 0.30, index=out.index) + 0.10 * q_icf
-        ).round(1)
-
-    # ── overall_score ─────────────────────────────────────────────────────────
-    w = SCORE_WEIGHTS
-    if out["moisture_score"].notna().all():
-        out["overall_score"] = (
-            w["heat"] * out["heat_score"]
-            + w["moisture"] * out["moisture_score"]
-            + w["freeze"] * out["freeze_score"]
-            + w["quality"] * out["data_quality_score"]
-        ).round(1)
-    else:
-        # Redistribute moisture weight: heat 0.50, freeze 0.35, quality 0.15
-        out["overall_score"] = (
-            0.50 * out["heat_score"]
-            + 0.35 * out["freeze_score"]
-            + 0.15 * out["data_quality_score"]
-        ).round(1)
-
-    return out
 
 
 def build_compare_summary(

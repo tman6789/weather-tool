@@ -51,6 +51,7 @@ def run(
     wind_event_metric: str = typer.Option("wetbulb", "--wind-event-metric", help="Metric for co-occurrence: tdb or wetbulb."),
     wind_event_thresholds: str = typer.Option("p99", "--wind-event-thresholds", help="Comma-separated thresholds (p99, p95, p996, or numeric)."),
     wind_event_min_hours: float = typer.Option(0.0, "--wind-event-min-hours", help="Minimum event duration for co-occurrence analysis."),
+    wind_gap_tolerance_mult: float = typer.Option(1.5, "--wind-gap-tolerance-mult", help="Gap > (mult * dt_minutes) breaks wind event continuity."),
 ) -> None:
     """Run a weather analysis pipeline."""
     fields_list = [f.strip() for f in fields.split(",") if f.strip()]
@@ -91,6 +92,7 @@ def run(
         wind_event_metric=wind_event_metric,
         wind_event_thresholds=wind_thresholds_list,
         wind_event_min_hours=wind_event_min_hours,
+        wind_gap_tolerance_mult=wind_gap_tolerance_mult,
     )
     cfg.validate()
 
@@ -214,6 +216,7 @@ def compare(
     wind_event_metric: str = typer.Option("wetbulb", "--wind-event-metric", help="Metric for co-occurrence: tdb or wetbulb."),
     wind_event_thresholds: str = typer.Option("p99", "--wind-event-thresholds", help="Comma-separated thresholds (p99, p95, p996, or numeric)."),
     wind_event_min_hours: float = typer.Option(0.0, "--wind-event-min-hours", help="Minimum event duration for co-occurrence analysis."),
+    wind_gap_tolerance_mult: float = typer.Option(1.5, "--wind-gap-tolerance-mult", help="Gap > (mult * dt_minutes) breaks wind event continuity."),
 ) -> None:
     """Compare climate metrics across multiple stations."""
     from weather_tool.core.compare import build_compare_summary
@@ -265,6 +268,7 @@ def compare(
             wind_event_metric=wind_event_metric,
             wind_event_thresholds=wind_thresholds_list,
             wind_event_min_hours=wind_event_min_hours,
+            wind_gap_tolerance_mult=wind_gap_tolerance_mult,
         )
         cfg.validate()
         result = run_station_pipeline(cfg, echo=verbose)
