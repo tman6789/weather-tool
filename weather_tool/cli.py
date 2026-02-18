@@ -43,11 +43,22 @@ def run(
     freeze_min_event_hours: float = typer.Option(3.0, "--freeze-min-event-hours", help="Minimum continuous hours below threshold to count as a freeze event."),
     freeze_gap_tolerance_mult: float = typer.Option(1.5, "--freeze-gap-tolerance-mult", help="Gap > (mult * dt_minutes) breaks event continuity."),
     freeze_shoulder_months: str = typer.Option("3,4,10,11", "--freeze-shoulder-months", help="Comma-separated month numbers for shoulder-season exposure (e.g. 3,4,10,11)."),
+    wind_rose: bool = typer.Option(False, "--wind-rose", help="Enable wind rose and co-occurrence analysis."),
+    wind_dir_bins: int = typer.Option(16, "--wind-dir-bins", help="Number of directional bins (8 or 16)."),
+    wind_speed_bins: str = typer.Option("0,5,10,15,20,30", "--wind-speed-bins", help="Comma-separated speed bin edges."),
+    wind_speed_units: str = typer.Option("mph", "--wind-speed-units", help="Speed units for binning: mph or kt."),
+    wind_rose_slices: str = typer.Option("annual,summer,winter", "--wind-rose-slices", help="Comma-separated seasonal slices (annual,winter,spring,summer,fall)."),
+    wind_event_metric: str = typer.Option("wetbulb", "--wind-event-metric", help="Metric for co-occurrence: tdb or wetbulb."),
+    wind_event_thresholds: str = typer.Option("p99", "--wind-event-thresholds", help="Comma-separated thresholds (p99, p95, p996, or numeric)."),
+    wind_event_min_hours: float = typer.Option(0.0, "--wind-event-min-hours", help="Minimum event duration for co-occurrence analysis."),
 ) -> None:
     """Run a weather analysis pipeline."""
     fields_list = [f.strip() for f in fields.split(",") if f.strip()]
     wb_stress_list = [float(t.strip()) for t in wb_stress_thresholds.split(",") if t.strip()]
     shoulder_months_list = [int(m.strip()) for m in freeze_shoulder_months.split(",") if m.strip()]
+    wind_speed_bins_list = [float(x.strip()) for x in wind_speed_bins.split(",") if x.strip()]
+    wind_slices_list = [s.strip() for s in wind_rose_slices.split(",") if s.strip()]
+    wind_thresholds_list = [t.strip() for t in wind_event_thresholds.split(",") if t.strip()]
     cfg = RunConfig(
         mode=mode,
         input_path=input,
@@ -72,6 +83,14 @@ def run(
         freeze_min_event_hours=freeze_min_event_hours,
         freeze_gap_tolerance_mult=freeze_gap_tolerance_mult,
         freeze_shoulder_months=shoulder_months_list,
+        wind_rose=wind_rose,
+        wind_dir_bins=wind_dir_bins,
+        wind_speed_bins=wind_speed_bins_list,
+        wind_speed_units=wind_speed_units,
+        wind_rose_slices=wind_slices_list,
+        wind_event_metric=wind_event_metric,
+        wind_event_thresholds=wind_thresholds_list,
+        wind_event_min_hours=wind_event_min_hours,
     )
     cfg.validate()
 
@@ -89,6 +108,9 @@ def _execute(cfg: RunConfig) -> None:
         save_quality_json,
         save_raw_parquet,
         save_summary_csv,
+        save_wind_event_json,
+        save_wind_rose_csv,
+        save_wind_rose_png,
     )
 
     typer.echo(f"[1/6] Loading data ({cfg.mode} mode)...")
@@ -135,6 +157,33 @@ def _execute(cfg: RunConfig) -> None:
     typer.echo(f"  Quality JSON:    {p3}")
     typer.echo(f"  Metadata JSON:   {p4}")
     typer.echo(f"  Insights MD:     {p5}")
+
+    # Wind outputs
+    if result.wind_results:
+        wind_dir = cfg.outdir / "wind"
+        matplotlib_warned = False
+        for slice_name, sdata in result.wind_results.get("slices", {}).items():
+            wc = save_wind_rose_csv(
+                sdata["rose_hours"], sdata["rose_meta"],
+                wind_dir, cfg.file_tag, slice_name,
+            )
+            typer.echo(f"  Wind rose CSV:   {wc}")
+            title = f"{cfg.station_id or 'CSV'} — {slice_name} — {cfg.start} to {cfg.end}"
+            wp = save_wind_rose_png(
+                sdata["rose_hours"], sdata["rose_meta"],
+                cfg.wind_speed_bins, cfg.wind_speed_units,
+                wind_dir, cfg.file_tag, slice_name, title,
+            )
+            if wp:
+                typer.echo(f"  Wind rose PNG:   {wp}")
+            elif not matplotlib_warned:
+                typer.echo("  WARNING: matplotlib not installed — wind rose PNGs skipped. Install with: pip install 'weather-tool[viz]'")
+                matplotlib_warned = True
+
+        if result.wind_results.get("events"):
+            we = save_wind_event_json(result.wind_results["events"], wind_dir, cfg.file_tag)
+            typer.echo(f"  Wind events JSON: {we}")
+
     typer.echo("Done.")
 
 
@@ -157,6 +206,14 @@ def compare(
     freeze_min_event_hours: float = typer.Option(3.0, "--freeze-min-event-hours", help="Minimum continuous hours below threshold to count as a freeze event."),
     freeze_gap_tolerance_mult: float = typer.Option(1.5, "--freeze-gap-tolerance-mult", help="Gap > (mult * dt_minutes) breaks event continuity."),
     freeze_shoulder_months: str = typer.Option("3,4,10,11", "--freeze-shoulder-months", help="Comma-separated month numbers for shoulder-season exposure (e.g. 3,4,10,11)."),
+    wind_rose: bool = typer.Option(False, "--wind-rose", help="Enable wind rose and co-occurrence analysis."),
+    wind_dir_bins: int = typer.Option(16, "--wind-dir-bins", help="Number of directional bins (8 or 16)."),
+    wind_speed_bins: str = typer.Option("0,5,10,15,20,30", "--wind-speed-bins", help="Comma-separated speed bin edges."),
+    wind_speed_units: str = typer.Option("mph", "--wind-speed-units", help="Speed units for binning: mph or kt."),
+    wind_rose_slices: str = typer.Option("annual,summer,winter", "--wind-rose-slices", help="Comma-separated seasonal slices."),
+    wind_event_metric: str = typer.Option("wetbulb", "--wind-event-metric", help="Metric for co-occurrence: tdb or wetbulb."),
+    wind_event_thresholds: str = typer.Option("p99", "--wind-event-thresholds", help="Comma-separated thresholds (p99, p95, p996, or numeric)."),
+    wind_event_min_hours: float = typer.Option(0.0, "--wind-event-min-hours", help="Minimum event duration for co-occurrence analysis."),
 ) -> None:
     """Compare climate metrics across multiple stations."""
     from weather_tool.core.compare import build_compare_summary
@@ -168,6 +225,9 @@ def compare(
     fields_list = [f.strip() for f in fields.split(",") if f.strip()]
     wb_stress_list = [float(t.strip()) for t in wb_stress_thresholds.split(",") if t.strip()]
     shoulder_months_list = [int(m.strip()) for m in freeze_shoulder_months.split(",") if m.strip()]
+    wind_speed_bins_list = [float(x.strip()) for x in wind_speed_bins.split(",") if x.strip()]
+    wind_slices_list = [s.strip() for s in wind_rose_slices.split(",") if s.strip()]
+    wind_thresholds_list = [t.strip() for t in wind_event_thresholds.split(",") if t.strip()]
     start_date = date.fromisoformat(start)
     end_date = date.fromisoformat(end)
 
@@ -197,6 +257,14 @@ def compare(
             freeze_min_event_hours=freeze_min_event_hours,
             freeze_gap_tolerance_mult=freeze_gap_tolerance_mult,
             freeze_shoulder_months=shoulder_months_list,
+            wind_rose=wind_rose,
+            wind_dir_bins=wind_dir_bins,
+            wind_speed_bins=wind_speed_bins_list,
+            wind_speed_units=wind_speed_units,
+            wind_rose_slices=wind_slices_list,
+            wind_event_metric=wind_event_metric,
+            wind_event_thresholds=wind_thresholds_list,
+            wind_event_min_hours=wind_event_min_hours,
         )
         cfg.validate()
         result = run_station_pipeline(cfg, echo=verbose)
@@ -252,6 +320,39 @@ def compare(
     typer.echo(f"  Compare report:  {paths['report']}")
     typer.echo(f"  Yearly parquet:  {paths['yearly']}")
     typer.echo(f"  Metadata JSON:   {paths['metadata']}")
+
+    # Per-station wind outputs
+    if wind_rose:
+        from weather_tool.storage.io import (
+            save_wind_event_json,
+            save_wind_rose_csv,
+            save_wind_rose_png,
+        )
+
+        matplotlib_warned = False
+        for r in station_results:
+            if not r.wind_results:
+                continue
+            sid = r.cfg.station_id or "csv"
+            wind_dir = cdir / "stations" / sid / "wind"
+            for slice_name, sdata in r.wind_results.get("slices", {}).items():
+                save_wind_rose_csv(
+                    sdata["rose_hours"], sdata["rose_meta"],
+                    wind_dir, r.cfg.file_tag, slice_name,
+                )
+                title = f"{sid} — {slice_name} — {start} to {end}"
+                wp = save_wind_rose_png(
+                    sdata["rose_hours"], sdata["rose_meta"],
+                    r.cfg.wind_speed_bins, r.cfg.wind_speed_units,
+                    wind_dir, r.cfg.file_tag, slice_name, title,
+                )
+                if wp is None and not matplotlib_warned:
+                    typer.echo("  WARNING: matplotlib not installed — wind rose PNGs skipped.")
+                    matplotlib_warned = True
+            if r.wind_results.get("events"):
+                save_wind_event_json(r.wind_results["events"], wind_dir, r.cfg.file_tag)
+            typer.echo(f"  Wind outputs for {sid}: {wind_dir}")
+
     typer.echo("Done.")
 
 

@@ -87,6 +87,16 @@ class RunConfig:
     freeze_gap_tolerance_mult: float = 1.5
     freeze_shoulder_months: list[int] = field(default_factory=lambda: [3, 4, 10, 11])
 
+    # Wind analytics
+    wind_rose: bool = False
+    wind_dir_bins: int = 16
+    wind_speed_bins: list[float] = field(default_factory=lambda: [0.0, 5.0, 10.0, 15.0, 20.0, 30.0])
+    wind_speed_units: str = "mph"
+    wind_rose_slices: list[str] = field(default_factory=lambda: ["annual", "summer", "winter"])
+    wind_event_metric: str = "wetbulb"       # "tdb" or "wetbulb"
+    wind_event_thresholds: list[str] = field(default_factory=lambda: ["p99"])
+    wind_event_min_hours: float = 0.0
+
     def validate(self) -> None:
         """Raise ValueError on invalid config combinations."""
         if self.mode == "csv" and self.input_path is None:

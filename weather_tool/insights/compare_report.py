@@ -205,6 +205,38 @@ def generate_compare_report_md(
                 lines.append(f"- **{r['station_id']}**")
             lines.append("")
 
+    # ── Wind Patterns ─────────────────────────────────────────────────────────
+    wind_cols_present = any(
+        c in compare_df.columns for c in ("wind_speed_mean_kt", "wind_speed_max_kt", "wind_calm_pct")
+    )
+    if wind_cols_present:
+        lines += ["## Wind Patterns", ""]
+        if "wind_speed_mean_kt" in compare_df.columns and compare_df["wind_speed_mean_kt"].notna().any():
+            lines += ["### Mean Wind Speed (kt, descending = windier)", ""]
+            ranked = (
+                compare_df[["station_id", "wind_speed_mean_kt"]]
+                .sort_values("wind_speed_mean_kt", ascending=False)
+                .reset_index(drop=True)
+            )
+            for i, (_, r) in enumerate(ranked.iterrows(), 1):
+                val = r["wind_speed_mean_kt"]
+                val_str = f"{float(val):.1f}" if not pd.isna(val) else "N/A"
+                lines.append(f"{i}. **{r['station_id']}** — {val_str} kt")
+            lines.append("")
+
+        if "wind_calm_pct" in compare_df.columns and compare_df["wind_calm_pct"].notna().any():
+            lines += ["### Calm Frequency (%, ascending = windier)", ""]
+            ranked = (
+                compare_df[["station_id", "wind_calm_pct"]]
+                .sort_values("wind_calm_pct", ascending=True)
+                .reset_index(drop=True)
+            )
+            for i, (_, r) in enumerate(ranked.iterrows(), 1):
+                val = r["wind_calm_pct"]
+                val_str = f"{float(val):.1f}%" if not pd.isna(val) else "N/A"
+                lines.append(f"{i}. **{r['station_id']}** — {val_str}")
+            lines.append("")
+
     # ── Full comparison table ─────────────────────────────────────────────────
     lines += ["## Comparison Table", ""]
     # Show a curated subset of columns for readability
@@ -228,12 +260,17 @@ def generate_compare_report_md(
             "freeze_event_max_duration_hours_max",
         )
     ]
+    wind_display = [
+        c for c in compare_df.columns
+        if c in ("wind_speed_mean_kt", "wind_speed_max_kt", "wind_calm_pct")
+    ]
     display_cols = [c for c in [
         "station_id", "years_covered_count", "tmax_max", "tmin_min",
         "t_p99_median", "wb_p99_median",
         *[c for c in compare_df.columns if c.startswith("hours_above_ref_") and c.endswith("_sum")],
         *freeze_display,
         *econ_display,
+        *wind_display,
         "heat_score", "moisture_score", "freeze_score", "data_quality_score", "overall_score",
         "coverage_weighted_pct", "timestamp_missing_pct_avg", "missing_data_warning",
     ] if c in compare_df.columns]

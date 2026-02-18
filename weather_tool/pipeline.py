@@ -20,6 +20,7 @@ class StationResult:
     quality_report: dict[str, Any]
     metadata: dict[str, Any]
     cfg: RunConfig
+    wind_results: dict[str, Any] | None = None
 
 
 def run_station_pipeline(cfg: RunConfig, echo: bool = False) -> StationResult:
@@ -74,6 +75,15 @@ def run_station_pipeline(cfg: RunConfig, echo: bool = False) -> StationResult:
         wb_avail = windowed["wetbulb_f"].notna().sum()
         _echo(f"  Wet-bulb computed: {wb_avail} non-NaN values.")
 
+    # 2b. Wind normalization
+    has_wind = any(
+        c in windowed.columns and windowed[c].notna().any() for c in ("drct", "sknt")
+    )
+    if has_wind:
+        from weather_tool.core.wind import normalize_wind
+        windowed = normalize_wind(windowed)
+        _echo("  Wind columns normalised (drct_deg, wind_speed_kt/mph, is_calm).")
+
     # 3. Interval inference (on deduplicated data)
     _echo("  Inferring sampling interval...")
     dedup = deduplicated(windowed)
@@ -86,6 +96,78 @@ def run_station_pipeline(cfg: RunConfig, echo: bool = False) -> StationResult:
     _echo("  Computing yearly summary...")
     summary = build_yearly_summary(windowed, cfg, interval_info)
     _echo(f"  {len(summary)} year(s) in summary.")
+
+    # 4b. Wind rose + co-occurrence analysis
+    wind_results: dict[str, Any] | None = None
+    if cfg.wind_rose and has_wind:
+        from weather_tool.core.wind import (
+            SLICE_MONTHS,
+            compute_event_wind_stats,
+            compute_sector_deltas,
+            prevailing_sector,
+            resolve_threshold,
+            wind_rose_table,
+        )
+
+        _echo("  Computing wind roses...")
+        wind_results = {"slices": {}, "events": {}}
+        annual_rose_hours = None
+
+        for slice_name in cfg.wind_rose_slices:
+            months = SLICE_MONTHS.get(slice_name)
+            if months is not None:
+                slice_mask = dedup["timestamp"].dt.month.isin(months)
+            else:
+                slice_mask = None
+
+            rose_hours, rose_meta = wind_rose_table(
+                dedup, interval_info["dt_minutes"],
+                dir_bins=cfg.wind_dir_bins,
+                speed_edges=cfg.wind_speed_bins,
+                speed_units=cfg.wind_speed_units,
+                slice_mask=slice_mask,
+            )
+            prev = prevailing_sector(rose_hours)
+
+            wind_results["slices"][slice_name] = {
+                "rose_hours": rose_hours,
+                "rose_meta": rose_meta,
+                "prevailing_sector": prev,
+            }
+            if slice_name == "annual":
+                annual_rose_hours = rose_hours
+            _echo(f"    {slice_name}: prevailing={prev}, valid_hrs={rose_meta['total_valid_hours']}")
+
+            # Co-occurrence: event wind stats per threshold
+            metric_col = "temp" if cfg.wind_event_metric == "tdb" else "wetbulb_f"
+            if metric_col in dedup.columns:
+                slice_df = dedup[slice_mask] if slice_mask is not None else dedup
+                metric_series = slice_df[metric_col] if metric_col in slice_df.columns else pd.Series(dtype=float)
+                for thr_spec in cfg.wind_event_thresholds:
+                    thr_value = resolve_threshold(thr_spec, metric_series)
+                    event_key = f"{slice_name}_{metric_col}_{thr_spec}"
+
+                    ev_stats = compute_event_wind_stats(
+                        slice_df.reset_index(drop=True),
+                        metric_col, thr_value, interval_info["dt_minutes"],
+                        dir_bins=cfg.wind_dir_bins,
+                        min_event_hours=cfg.wind_event_min_hours,
+                        gap_tolerance_mult=cfg.freeze_gap_tolerance_mult,
+                    )
+
+                    # Sector deltas vs baseline
+                    baseline = annual_rose_hours if annual_rose_hours is not None else rose_hours
+                    deltas = compute_sector_deltas(baseline, ev_stats.get("sector_pct", {}))
+                    ev_stats["sector_deltas"] = deltas
+
+                    wind_results["events"][event_key] = {
+                        "threshold_spec": thr_spec,
+                        "threshold_value": round(thr_value, 2) if not pd.isna(thr_value) else None,
+                        "metric": metric_col,
+                        "slice": slice_name,
+                        **ev_stats,
+                    }
+                    _echo(f"    event {event_key}: {ev_stats['event_count']} events, {ev_stats['event_hours_total']} hrs")
 
     # 5. Build quality report + metadata
     _base_quality_cols = [
@@ -137,4 +219,5 @@ def run_station_pipeline(cfg: RunConfig, echo: bool = False) -> StationResult:
         quality_report=quality_report,
         metadata=metadata,
         cfg=cfg,
+        wind_results=wind_results,
     )

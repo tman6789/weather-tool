@@ -221,6 +221,14 @@ def aggregate_station_window(
         or low_wb_coverage
     )
 
+    # Wind summary aggregation
+    if "wind_speed_mean_kt" in summary.columns and summary["wind_speed_mean_kt"].notna().any():
+        row["wind_speed_mean_kt"] = round(float(summary["wind_speed_mean_kt"].mean()), 2)
+    if "wind_speed_max_kt" in summary.columns and summary["wind_speed_max_kt"].notna().any():
+        row["wind_speed_max_kt"] = round(float(summary["wind_speed_max_kt"].max()), 2)
+    if "wind_calm_pct" in summary.columns and summary["wind_calm_pct"].notna().any():
+        row["wind_calm_pct"] = round(float(summary["wind_calm_pct"].mean()), 2)
+
     # Quality warning flag
     mpa = row.get("timestamp_missing_pct_avg", float("nan"))
     wba = row.get("wetbulb_availability_pct_avg", float("nan"))

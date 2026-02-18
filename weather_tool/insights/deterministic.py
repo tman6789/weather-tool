@@ -283,6 +283,22 @@ def generate_insights_md(
         lines.append("_Freeze hours not computed (no temperature data)._")
         lines.append("")
 
+    # ── Wind & Co-Occurrence ──
+    if "wind_speed_mean_kt" in summary.columns and summary["wind_speed_mean_kt"].notna().any():
+        lines.append("## Wind & Co-Occurrence")
+        lines.append("")
+        mean_spd = float(summary["wind_speed_mean_kt"].mean())
+        max_spd = float(summary["wind_speed_max_kt"].max()) if "wind_speed_max_kt" in summary.columns else float("nan")
+        lines.append(f"**Mean wind speed:** {mean_spd:.1f} kt ({mean_spd * 1.15078:.1f} mph)")
+        if not pd.isna(max_spd):
+            lines.append(f"**Max wind speed:** {max_spd:.1f} kt ({max_spd * 1.15078:.1f} mph)")
+        if "wind_calm_pct" in summary.columns and summary["wind_calm_pct"].notna().any():
+            calm_avg = float(summary["wind_calm_pct"].mean())
+            lines.append(f"**Average calm frequency:** {calm_avg:.1f}%")
+        lines.append("")
+        lines.append("*See wind_rose_*.csv and wind_rose_*.png files for directional analysis.*")
+        lines.append("")
+
     # ── Data quality notes ──
     lines.append("## Data Quality Notes")
     lines.append("")

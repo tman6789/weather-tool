@@ -121,3 +121,63 @@ def save_compare_outputs(
         save_metadata_json(r.metadata, sid_cfg)
 
     return paths
+
+
+# ── Wind output helpers ──────────────────────────────────────────────────────
+
+
+def save_wind_rose_csv(
+    rose_hours: pd.DataFrame,
+    rose_meta: dict[str, Any],
+    outdir: Path,
+    file_tag: str,
+    slice_name: str,
+) -> Path:
+    """Save wind rose hours matrix as CSV with metadata header comments."""
+    _ensure_dir(outdir)
+    p = outdir / f"wind_rose_{slice_name}_{file_tag}.csv"
+    with open(p, "w", encoding="utf-8") as f:
+        for k, v in rose_meta.items():
+            f.write(f"# {k}: {v}\n")
+        rose_hours.to_csv(f)
+    return p
+
+
+def save_wind_rose_png(
+    rose_hours: pd.DataFrame,
+    rose_meta: dict[str, Any],
+    speed_edges: list[float],
+    speed_units: str,
+    outdir: Path,
+    file_tag: str,
+    slice_name: str,
+    title: str,
+) -> Path | None:
+    """Save wind rose PNG. Returns None if matplotlib is not installed."""
+    _ensure_dir(outdir)
+    p = outdir / f"wind_rose_{slice_name}_{file_tag}.png"
+    try:
+        from weather_tool.core.wind_plot import plot_wind_rose
+        plot_wind_rose(rose_hours, rose_meta, speed_edges, speed_units, title, p)
+        return p
+    except ImportError:
+        return None
+
+
+def save_wind_event_json(
+    event_stats: dict[str, Any],
+    outdir: Path,
+    file_tag: str,
+) -> Path:
+    """Save wind co-occurrence event stats as JSON."""
+    _ensure_dir(outdir)
+    p = outdir / f"wind_events_{file_tag}.json"
+    # Filter out non-serializable items (DataFrames, Series)
+    clean = {}
+    for k, v in event_stats.items():
+        if isinstance(v, (pd.DataFrame, pd.Series)):
+            continue
+        clean[k] = v
+    with open(p, "w", encoding="utf-8") as f:
+        json.dump(clean, f, indent=2, default=str)
+    return p

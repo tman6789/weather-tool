@@ -168,6 +168,15 @@ def build_yearly_summary(
             min_completeness_frac=ROLLING_COMPLETENESS_MIN_FRAC,
         )
 
+        # Wind summary stats
+        wind_row: dict[str, Any] = {}
+        if "wind_speed_kt" in dedup.columns and dedup["wind_speed_kt"].notna().any():
+            valid_speed = dedup["wind_speed_kt"].dropna()
+            wind_row["wind_speed_mean_kt"] = round(float(valid_speed.mean()), 2)
+            wind_row["wind_speed_max_kt"] = round(float(valid_speed.max()), 2)
+            if "is_calm" in dedup.columns:
+                wind_row["wind_calm_pct"] = round(float(dedup["is_calm"].sum()) / max(len(dedup), 1) * 100, 2)
+
         cov = _coverage(yr, slice_start, slice_end)
         partial = cov < PARTIAL_COVERAGE_THRESHOLD
 
@@ -188,6 +197,7 @@ def build_yearly_summary(
                 "ref_temp": cfg.ref_temp,
                 **wb_row,
                 **econ_row,
+                **wind_row,
                 **quality,
                 "coverage_pct": round(cov, 6),
                 "partial_coverage_flag": partial,
