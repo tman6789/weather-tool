@@ -21,6 +21,7 @@ class StationResult:
     metadata: dict[str, Any]
     cfg: RunConfig
     wind_results: dict[str, Any] | None = None
+    design_day: pd.DataFrame | None = None
 
 
 def run_station_pipeline(cfg: RunConfig, echo: bool = False) -> StationResult:
@@ -96,6 +97,16 @@ def run_station_pipeline(cfg: RunConfig, echo: bool = False) -> StationResult:
     _echo("  Computing yearly summary...")
     summary = build_yearly_summary(windowed, cfg, interval_info)
     _echo(f"  {len(summary)} year(s) in summary.")
+
+    # 4a. Design day profile (optional)
+    design_day_df: pd.DataFrame | None = None
+    if cfg.design_day:
+        from weather_tool.core.extreme import compute_design_day
+        design_day_df = compute_design_day(
+            dedup, dedup["timestamp"], interval_info["dt_minutes"],
+            metric=cfg.design_metric,
+        )
+        _echo(f"  Design day: {'generated' if not design_day_df.empty else 'insufficient data'}.")
 
     # 4b. Wind rose + co-occurrence analysis
     wind_results: dict[str, Any] | None = None
@@ -220,4 +231,5 @@ def run_station_pipeline(cfg: RunConfig, echo: bool = False) -> StationResult:
         metadata=metadata,
         cfg=cfg,
         wind_results=wind_results,
+        design_day=design_day_df,
     )

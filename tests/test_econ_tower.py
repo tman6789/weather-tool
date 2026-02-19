@@ -10,10 +10,10 @@ import pytest
 from weather_tool.core.econ_tower import (
     compute_air_econ_hours,
     compute_lwt_proxy_metrics,
-    compute_rolling_wb_max,
     compute_tower_stress_hours,
     compute_wec_hours,
 )
+from weather_tool.core.econ_tower import compute_rolling_wb_max
 
 
 # ── 7.1 Airside economizer hours ──────────────────────────────────────────────

@@ -52,6 +52,11 @@ def run(
     wind_event_thresholds: str = typer.Option("p99", "--wind-event-thresholds", help="Comma-separated thresholds (p99, p95, p996, or numeric)."),
     wind_event_min_hours: float = typer.Option(0.0, "--wind-event-min-hours", help="Minimum event duration for co-occurrence analysis."),
     wind_gap_tolerance_mult: float = typer.Option(1.5, "--wind-gap-tolerance-mult", help="Gap > (mult * dt_minutes) breaks wind event continuity."),
+    no_cache: bool = typer.Option(False, "--no-cache", help="Disable IEM data caching."),
+    cache_dir: Optional[Path] = typer.Option(None, "--cache-dir", help="Cache directory (default: .cache/)."),
+    design_day: bool = typer.Option(False, "--design-day", help="Generate synthetic design-day profile."),
+    design_metric: str = typer.Option("wetbulb_f", "--design-metric", help="Metric for design day: wetbulb_f or temp."),
+    design_percentiles: str = typer.Option("99,99.6", "--design-percentiles", help="Comma-separated design percentiles."),
 ) -> None:
     """Run a weather analysis pipeline."""
     fields_list = [f.strip() for f in fields.split(",") if f.strip()]
@@ -60,6 +65,7 @@ def run(
     wind_speed_bins_list = [float(x.strip()) for x in wind_speed_bins.split(",") if x.strip()]
     wind_slices_list = [s.strip() for s in wind_rose_slices.split(",") if s.strip()]
     wind_thresholds_list = [t.strip() for t in wind_event_thresholds.split(",") if t.strip()]
+    design_pctl_list = [float(p.strip()) for p in design_percentiles.split(",") if p.strip()]
     cfg = RunConfig(
         mode=mode,
         input_path=input,
@@ -93,6 +99,11 @@ def run(
         wind_event_thresholds=wind_thresholds_list,
         wind_event_min_hours=wind_event_min_hours,
         wind_gap_tolerance_mult=wind_gap_tolerance_mult,
+        no_cache=no_cache,
+        cache_dir=cache_dir,
+        design_day=design_day,
+        design_metric=design_metric,
+        design_percentiles=design_pctl_list,
     )
     cfg.validate()
 
@@ -105,6 +116,7 @@ def _execute(cfg: RunConfig) -> None:
     from weather_tool.insights.llm import generate_llm_narrative
     from weather_tool.pipeline import run_station_pipeline
     from weather_tool.storage.io import (
+        save_design_day_csv,
         save_insights_md,
         save_metadata_json,
         save_quality_json,
@@ -159,6 +171,11 @@ def _execute(cfg: RunConfig) -> None:
     typer.echo(f"  Quality JSON:    {p3}")
     typer.echo(f"  Metadata JSON:   {p4}")
     typer.echo(f"  Insights MD:     {p5}")
+
+    # Design day output
+    if result.design_day is not None and not result.design_day.empty:
+        p_dd = save_design_day_csv(result.design_day, cfg)
+        typer.echo(f"  Design day CSV:  {p_dd}")
 
     # Wind outputs
     if result.wind_results:
@@ -217,6 +234,11 @@ def compare(
     wind_event_thresholds: str = typer.Option("p99", "--wind-event-thresholds", help="Comma-separated thresholds (p99, p95, p996, or numeric)."),
     wind_event_min_hours: float = typer.Option(0.0, "--wind-event-min-hours", help="Minimum event duration for co-occurrence analysis."),
     wind_gap_tolerance_mult: float = typer.Option(1.5, "--wind-gap-tolerance-mult", help="Gap > (mult * dt_minutes) breaks wind event continuity."),
+    no_cache: bool = typer.Option(False, "--no-cache", help="Disable IEM data caching."),
+    cache_dir: Optional[Path] = typer.Option(None, "--cache-dir", help="Cache directory (default: .cache/)."),
+    design_day: bool = typer.Option(False, "--design-day", help="Generate synthetic design-day profile."),
+    design_metric: str = typer.Option("wetbulb_f", "--design-metric", help="Metric for design day: wetbulb_f or temp."),
+    design_percentiles: str = typer.Option("99,99.6", "--design-percentiles", help="Comma-separated design percentiles."),
 ) -> None:
     """Compare climate metrics across multiple stations."""
     from weather_tool.core.compare import build_compare_summary
@@ -231,6 +253,7 @@ def compare(
     wind_speed_bins_list = [float(x.strip()) for x in wind_speed_bins.split(",") if x.strip()]
     wind_slices_list = [s.strip() for s in wind_rose_slices.split(",") if s.strip()]
     wind_thresholds_list = [t.strip() for t in wind_event_thresholds.split(",") if t.strip()]
+    design_pctl_list = [float(p.strip()) for p in design_percentiles.split(",") if p.strip()]
     start_date = date.fromisoformat(start)
     end_date = date.fromisoformat(end)
 
@@ -269,6 +292,11 @@ def compare(
             wind_event_thresholds=wind_thresholds_list,
             wind_event_min_hours=wind_event_min_hours,
             wind_gap_tolerance_mult=wind_gap_tolerance_mult,
+            no_cache=no_cache,
+            cache_dir=cache_dir,
+            design_day=design_day,
+            design_metric=design_metric,
+            design_percentiles=design_pctl_list,
         )
         cfg.validate()
         result = run_station_pipeline(cfg, echo=verbose)
@@ -324,6 +352,19 @@ def compare(
     typer.echo(f"  Compare report:  {paths['report']}")
     typer.echo(f"  Yearly parquet:  {paths['yearly']}")
     typer.echo(f"  Metadata JSON:   {paths['metadata']}")
+
+    # Per-station design-day outputs
+    if design_day:
+        import dataclasses as _dc
+        from weather_tool.storage.io import save_design_day_csv
+        for r in station_results:
+            if r.design_day is not None and not r.design_day.empty:
+                sid = r.cfg.station_id or "csv"
+                sdir = cdir / "stations" / sid
+                sdir.mkdir(parents=True, exist_ok=True)
+                sid_cfg = _dc.replace(r.cfg, outdir=sdir)
+                p_dd = save_design_day_csv(r.design_day, sid_cfg)
+                typer.echo(f"  Design day CSV ({sid}): {p_dd}")
 
     # Per-station wind outputs
     if wind_rose:

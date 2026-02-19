@@ -235,6 +235,56 @@ def generate_insights_md(
         )
         lines.append("")
 
+    # ── Design Conditions ──
+    lines.append("## Design Conditions")
+    lines.append("")
+
+    # Map percentile values to summary column names
+    _pctl_col_map = {99.0: ("t_p99", "wb_p99"), 99.6: ("t_p996", "wb_p996")}
+    requested_pctls = getattr(cfg, "design_percentiles", [99.0, 99.6])
+
+    tdb_pctl_lines: list[str] = []
+    for pctl in requested_pctls:
+        t_col, _ = _pctl_col_map.get(pctl, (None, None))
+        if t_col and t_col in summary.columns and summary[t_col].notna().any():
+            med_val = float(summary[t_col].dropna().median())
+            ashrae_exc = round(100.0 - pctl, 1)
+            tdb_pctl_lines.append(f"- {pctl}% (ASHRAE {ashrae_exc}%): {med_val:.1f} °F")
+    if tdb_pctl_lines:
+        lines.append("**Dry-bulb design (median across years):**")
+        lines.extend(tdb_pctl_lines)
+        lines.append("")
+
+    wb_pctl_lines: list[str] = []
+    for pctl in requested_pctls:
+        _, wb_col = _pctl_col_map.get(pctl, (None, None))
+        if wb_col and wb_col in summary.columns and summary[wb_col].notna().any():
+            med_val = float(summary[wb_col].dropna().median())
+            label = f"- {pctl}%"
+            if pctl == 99.6:
+                label += " (critical tower)"
+            wb_pctl_lines.append(f"{label}: {med_val:.1f} °F")
+    if wb_pctl_lines:
+        lines.append("**Wet-bulb design (median across years):**")
+        lines.extend(wb_pctl_lines)
+        lines.append("")
+
+    if "tdb_mean_72h_max" in summary.columns and summary["tdb_mean_72h_max"].notna().any():
+        worst_tdb_72 = float(summary["tdb_mean_72h_max"].dropna().max())
+        worst_yr = int(summary.loc[summary["tdb_mean_72h_max"].idxmax(), "year"])
+        lines.append(f"**Worst sustained 72h dry-bulb:** {worst_tdb_72:.1f} °F (year {worst_yr})")
+
+    if "wb_mean_72h_max" in summary.columns and summary["wb_mean_72h_max"].notna().any():
+        worst_wb_72 = float(summary["wb_mean_72h_max"].dropna().max())
+        worst_yr = int(summary.loc[summary["wb_mean_72h_max"].idxmax(), "year"])
+        lines.append(f"**Worst sustained 72h wet-bulb:** {worst_wb_72:.1f} °F (year {worst_yr})")
+
+    if "exceedance_hours_tdb_p99" in summary.columns and summary["exceedance_hours_tdb_p99"].notna().any():
+        avg_exc = float(summary["exceedance_hours_tdb_p99"].dropna().mean())
+        lines.append(f"**Avg exceedance above Tdb p99:** {avg_exc:.1f} hrs/year")
+
+    lines.append("")
+
     # ── Freeze Risk ──
     lines.append("## Freeze Risk")
     lines.append("")

@@ -11,6 +11,11 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+from weather_tool.core.extreme import compute_rolling_max
+
+# Backward-compatible alias — compute_rolling_wb_max was moved to extreme.py
+compute_rolling_wb_max = compute_rolling_max
+
 
 def compute_air_econ_hours(
     temps: pd.Series,
@@ -117,56 +122,6 @@ def compute_tower_stress_hours(
     return result
 
 
-def compute_rolling_wb_max(
-    wb: pd.Series,
-    timestamps: pd.Series,
-    window_hours: int,
-    dt_minutes: float,
-    min_completeness_frac: float = 0.80,
-) -> float:
-    """Max rolling <window_hours>h mean wet-bulb with completeness guard.
-
-    Resamples the deduplicated wet-bulb series onto a regular dt_minutes grid
-    first, then applies an integer-step rolling window. This ensures uniform
-    spacing before computing min_periods based on expected sample count.
-
-    Parameters
-    ----------
-    wb : pd.Series of wet-bulb temperatures (°F); may contain NaN.
-    timestamps : pd.Series of timestamps (tz-aware) aligned to wb.
-    window_hours : rolling window size in hours (24 or 72).
-    dt_minutes : inferred sampling interval in minutes.
-    min_completeness_frac : minimum fraction of expected samples required
-        for a window to count (default 0.80).
-
-    Returns
-    -------
-    float — max of valid rolling means. NaN if dt_minutes invalid, wb has
-    no valid data, or no window meets the completeness threshold.
-    """
-    if math.isnan(dt_minutes) or dt_minutes <= 0 or len(wb) == 0:
-        return float("nan")
-
-    # Build time-indexed series and resample to regular grid
-    indexed = pd.Series(wb.values, index=pd.DatetimeIndex(timestamps.values))
-    indexed = indexed.sort_index()
-
-    dt_round = max(1, round(dt_minutes))
-    freq_str = f"{dt_round}min"
-    resampled = indexed.resample(freq_str).mean()  # NaN for gaps in grid
-
-    n_steps = int(round(window_hours * 60.0 / dt_round))
-    if n_steps < 1:
-        return float("nan")
-    min_periods = max(1, int(min_completeness_frac * n_steps))
-
-    rolling_mean = resampled.rolling(window=n_steps, min_periods=min_periods).mean()
-    valid_means = rolling_mean.dropna()
-    if len(valid_means) == 0:
-        return float("nan")
-    return round(float(valid_means.max()), 2)
-
-
 def compute_lwt_proxy_metrics(
     wb: pd.Series,
     tower_approach_f: float,
@@ -253,10 +208,10 @@ def compute_econ_tower_yearly(
     # Rolling wb maxima + LWT proxy
     if wb_available:
         ts = dedup["timestamp"]
-        result["wb_mean_24h_max"] = compute_rolling_wb_max(
+        result["wb_mean_24h_max"] = compute_rolling_max(
             wb, ts, 24, dt_minutes, min_completeness_frac
         )
-        result["wb_mean_72h_max"] = compute_rolling_wb_max(
+        result["wb_mean_72h_max"] = compute_rolling_max(
             wb, ts, 72, dt_minutes, min_completeness_frac
         )
         lwt = compute_lwt_proxy_metrics(wb, tower_approach_f)

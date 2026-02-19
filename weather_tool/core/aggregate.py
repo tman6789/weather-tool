@@ -17,6 +17,7 @@ from weather_tool.config import (
     RunConfig,
 )
 from weather_tool.core.econ_tower import compute_econ_tower_yearly
+from weather_tool.core.extreme import compute_extreme_yearly
 from weather_tool.core.freeze import compute_freeze_yearly
 from weather_tool.core.metrics import hours_above_ref, infer_interval
 from weather_tool.core.quality import compute_quality
@@ -168,6 +169,15 @@ def build_yearly_summary(
             min_completeness_frac=ROLLING_COMPLETENESS_MIN_FRAC,
         )
 
+        # Extreme / persistence metrics
+        extreme_row = compute_extreme_yearly(
+            dedup=dedup,
+            dt_minutes=effective_dt,
+            t_p99=t_p99,
+            wb_p99=wb_row.get("wb_p99"),
+            min_completeness_frac=ROLLING_COMPLETENESS_MIN_FRAC,
+        )
+
         # Wind summary stats
         wind_row: dict[str, Any] = {}
         if "wind_speed_kt" in dedup.columns and dedup["wind_speed_kt"].notna().any():
@@ -197,6 +207,7 @@ def build_yearly_summary(
                 "ref_temp": cfg.ref_temp,
                 **wb_row,
                 **econ_row,
+                **extreme_row,
                 **wind_row,
                 **quality,
                 "coverage_pct": round(cov, 6),

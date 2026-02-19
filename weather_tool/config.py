@@ -98,6 +98,15 @@ class RunConfig:
     wind_event_min_hours: float = 0.0
     wind_gap_tolerance_mult: float = 1.5
 
+    # Cache
+    no_cache: bool = False
+    cache_dir: Path | None = None  # None → default .cache/
+
+    # Design day / EVA
+    design_day: bool = False
+    design_metric: str = "wetbulb_f"  # "temp" or "wetbulb_f"
+    design_percentiles: list[float] = field(default_factory=lambda: [99.0, 99.6])
+
     def validate(self) -> None:
         """Raise ValueError on invalid config combinations."""
         if self.mode == "csv" and self.input_path is None:

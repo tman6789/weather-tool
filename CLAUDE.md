@@ -64,3 +64,13 @@ IEM (Iowa Environmental Mesonet) ASOS API at `mesonet.agron.iastate.edu`. Six fi
 ### Test Conventions
 
 Tests live in `tests/` and use synthetic in-memory DataFrames (e.g., `pd.date_range` + sinusoidal temps). No network calls or file fixtures needed. Tests mirror the module they cover (e.g., `test_freeze.py` tests `core/freeze.py`).
+
+### Current Roadmap
+
+    Phase 1: DX & Performance - Implement Parquet caching and RunConfig profiles.
+
+    Phase 2: Design Day Engine - ASHRAE percentiles (p99.6,p98) and MCWB logic.
+
+    Phase 3: Simulation - Cooling tower approach and economizer hours.
+
+    Phase 4: UI - Streamlit dashboard for comparison.

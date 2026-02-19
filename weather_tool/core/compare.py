@@ -227,6 +227,18 @@ def aggregate_station_window(
             valid_v = summary[max_col].dropna()
             row[f"{max_col}_max"] = float(valid_v.max()) if len(valid_v) > 0 else float("nan")
 
+    # Dry-bulb persistence — max of yearly maxima
+    for max_col in ("tdb_mean_24h_max", "tdb_mean_72h_max"):
+        if max_col in summary.columns:
+            valid_v = summary[max_col].dropna()
+            row[f"{max_col}_max"] = float(valid_v.max()) if len(valid_v) > 0 else float("nan")
+
+    # Exceedance hours — sum across years (NaN if all years are NaN)
+    for exc_col in ("exceedance_hours_tdb_p99", "exceedance_hours_twb_p99"):
+        if exc_col in summary.columns:
+            valid_exc = summary[exc_col].dropna()
+            row[f"{exc_col}_sum"] = round(float(valid_exc.sum()), 2) if len(valid_exc) > 0 else float("nan")
+
     # LWT proxy — median across years
     if "lwt_proxy_p99" in summary.columns:
         valid_lwt = summary["lwt_proxy_p99"].dropna()

@@ -51,6 +51,13 @@ def save_metadata_json(metadata: dict[str, Any], cfg: RunConfig) -> Path:
     return p
 
 
+def save_design_day_csv(design_day: pd.DataFrame, cfg: RunConfig) -> Path:
+    _ensure_dir(cfg.outdir)
+    p = cfg.outdir / f"design_day_{cfg.file_tag}.csv"
+    design_day.to_csv(p, index=False)
+    return p
+
+
 def save_insights_md(content: str, cfg: RunConfig) -> Path:
     _ensure_dir(cfg.outdir)
     p = cfg.outdir / f"insights_{cfg.file_tag}.md"

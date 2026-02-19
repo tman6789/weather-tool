@@ -31,5 +31,8 @@ Thumbs.db
 .coverage
 htmlcov/
 
+# IEM data cache
+.cache/
+
 # Claude
 .claude/
