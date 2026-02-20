@@ -57,6 +57,12 @@ def run(
     design_day: bool = typer.Option(False, "--design-day", help="Generate synthetic design-day profile."),
     design_metric: str = typer.Option("wetbulb_f", "--design-metric", help="Metric for design day: wetbulb_f or temp."),
     design_percentiles: str = typer.Option("99,99.6", "--design-percentiles", help="Comma-separated design percentiles."),
+    decision_ai: bool = typer.Option(False, "--decision-ai", help="Build Decision AI packet + exec summary."),
+    decision_profile: str = typer.Option("datacenter", "--decision-profile", help="Decision AI profile: datacenter, economizer_first, or freeze_sensitive."),
+    death_day_window_hours: int = typer.Option(24, "--death-day-window-hours", help="Rolling window length (hours) for Death Day detection."),
+    death_day_top_n: int = typer.Option(5, "--death-day-top-n", help="Number of Death Day candidates to return."),
+    llm_exec_summary: bool = typer.Option(False, "--llm-exec-summary", help="Generate optional LLM narrative for the decision packet (requires OPENAI_API_KEY)."),
+    compare_packet_full: bool = typer.Option(False, "--compare-packet-full", help="Embed full per-station packets in compare_packet.json (default: lean summaries only)."),
 ) -> None:
     """Run a weather analysis pipeline."""
     fields_list = [f.strip() for f in fields.split(",") if f.strip()]
@@ -104,6 +110,12 @@ def run(
         design_day=design_day,
         design_metric=design_metric,
         design_percentiles=design_pctl_list,
+        decision_ai=decision_ai,
+        decision_profile=decision_profile,
+        death_day_window_hours=death_day_window_hours,
+        death_day_top_n=death_day_top_n,
+        llm_exec_summary=llm_exec_summary,
+        compare_packet_full=compare_packet_full,
     )
     cfg.validate()
 
@@ -117,10 +129,12 @@ def _execute(cfg: RunConfig) -> None:
     from weather_tool.pipeline import run_station_pipeline
     from weather_tool.storage.io import (
         save_design_day_csv,
+        save_exec_summary_md,
         save_insights_md,
         save_metadata_json,
         save_quality_json,
         save_raw_parquet,
+        save_station_packet_json,
         save_summary_csv,
         save_wind_event_json,
         save_wind_rose_csv,
@@ -171,6 +185,18 @@ def _execute(cfg: RunConfig) -> None:
     typer.echo(f"  Quality JSON:    {p3}")
     typer.echo(f"  Metadata JSON:   {p4}")
     typer.echo(f"  Insights MD:     {p5}")
+
+    # Decision AI outputs
+    if result.decision:
+        p_pkt = save_station_packet_json(result.decision["packet"], cfg)
+        typer.echo(f"  Station packet:  {p_pkt}")
+        p_exec = save_exec_summary_md(result.decision["exec_summary_md"], cfg, llm=False)
+        typer.echo(f"  Exec summary:    {p_exec}")
+        if result.decision["llm_exec_summary_md"]:
+            p_llm = save_exec_summary_md(result.decision["llm_exec_summary_md"], cfg, llm=True)
+            typer.echo(f"  LLM exec summary: {p_llm}")
+        elif cfg.llm_exec_summary:
+            typer.echo("       LLM exec summary skipped (no API key or openai not installed).")
 
     # Design day output
     if result.design_day is not None and not result.design_day.empty:
@@ -239,6 +265,12 @@ def compare(
     design_day: bool = typer.Option(False, "--design-day", help="Generate synthetic design-day profile."),
     design_metric: str = typer.Option("wetbulb_f", "--design-metric", help="Metric for design day: wetbulb_f or temp."),
     design_percentiles: str = typer.Option("99,99.6", "--design-percentiles", help="Comma-separated design percentiles."),
+    decision_ai: bool = typer.Option(False, "--decision-ai", help="Build Decision AI packet + exec summary for each station and compare."),
+    decision_profile: str = typer.Option("datacenter", "--decision-profile", help="Decision AI profile: datacenter, economizer_first, or freeze_sensitive."),
+    death_day_window_hours: int = typer.Option(24, "--death-day-window-hours", help="Rolling window length (hours) for Death Day detection."),
+    death_day_top_n: int = typer.Option(5, "--death-day-top-n", help="Number of Death Day candidates to return per station."),
+    llm_exec_summary: bool = typer.Option(False, "--llm-exec-summary", help="Generate optional LLM narrative for the decision packets (requires OPENAI_API_KEY)."),
+    compare_packet_full: bool = typer.Option(False, "--compare-packet-full", help="Embed full per-station packets in compare_packet.json (default: lean summaries only)."),
 ) -> None:
     """Compare climate metrics across multiple stations."""
     from weather_tool.core.compare import build_compare_summary
@@ -297,6 +329,12 @@ def compare(
             design_day=design_day,
             design_metric=design_metric,
             design_percentiles=design_pctl_list,
+            decision_ai=decision_ai,
+            decision_profile=decision_profile,
+            death_day_window_hours=death_day_window_hours,
+            death_day_top_n=death_day_top_n,
+            llm_exec_summary=llm_exec_summary,
+            compare_packet_full=compare_packet_full,
         )
         cfg.validate()
         result = run_station_pipeline(cfg, echo=verbose)
@@ -352,6 +390,40 @@ def compare(
     typer.echo(f"  Compare report:  {paths['report']}")
     typer.echo(f"  Yearly parquet:  {paths['yearly']}")
     typer.echo(f"  Metadata JSON:   {paths['metadata']}")
+
+    # Decision AI compare outputs
+    if decision_ai:
+        from weather_tool.insights.exec_summary import render_exec_summary_compare
+        from weather_tool.insights.llm_exec_summary import generate_llm_exec_summary
+        from weather_tool.insights.packet import build_compare_packet
+        from weather_tool.storage.io import (
+            save_compare_exec_summary_md,
+            save_compare_packet_json,
+        )
+
+        station_packets = [r.decision["packet"] for r in station_results if r.decision]
+        if station_packets:
+            compare_packet = build_compare_packet(
+                cfg_start=start,
+                cfg_end=end,
+                compare_df=compare_df,
+                station_packets=station_packets,
+                stations=stations,
+                full=compare_packet_full,
+            )
+            tag = cdir.name
+            p_cpkt = save_compare_packet_json(compare_packet, cdir, tag)
+            typer.echo(f"  Compare packet:  {p_cpkt}")
+            exec_compare_md = render_exec_summary_compare(compare_packet)
+            p_cexec = save_compare_exec_summary_md(exec_compare_md, cdir, tag)
+            typer.echo(f"  Compare exec summary: {p_cexec}")
+            if llm_exec_summary:
+                llm_text = generate_llm_exec_summary(compare_packet)
+                if llm_text:
+                    p_cllm = save_compare_exec_summary_md(llm_text, cdir, tag, llm=True)
+                    typer.echo(f"  Compare LLM exec summary: {p_cllm}")
+                else:
+                    typer.echo("       Compare LLM exec summary skipped (no API key or openai not installed).")
 
     # Per-station design-day outputs
     if design_day:

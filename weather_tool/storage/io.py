@@ -130,6 +130,45 @@ def save_compare_outputs(
     return paths
 
 
+# ── Decision AI output helpers ───────────────────────────────────────────────
+
+
+def save_station_packet_json(packet: dict[str, Any], cfg: RunConfig) -> Path:
+    """Save station decision packet → outdir/station_packet_{file_tag}.json."""
+    _ensure_dir(cfg.outdir)
+    p = cfg.outdir / f"station_packet_{cfg.file_tag}.json"
+    with open(p, "w", encoding="utf-8") as f:
+        json.dump(packet, f, indent=2, default=str)
+    return p
+
+
+def save_exec_summary_md(text: str, cfg: RunConfig, llm: bool = False) -> Path:
+    """Save exec summary markdown → outdir/exec_summary[_llm]_{file_tag}.md."""
+    _ensure_dir(cfg.outdir)
+    prefix = "exec_summary_llm" if llm else "exec_summary"
+    p = cfg.outdir / f"{prefix}_{cfg.file_tag}.md"
+    p.write_text(text, encoding="utf-8")
+    return p
+
+
+def save_compare_packet_json(packet: dict[str, Any], compare_dir: Path, tag: str) -> Path:
+    """Save compare decision packet → compare_dir/compare_packet_{tag}.json."""
+    _ensure_dir(compare_dir)
+    p = compare_dir / f"compare_packet_{tag}.json"
+    with open(p, "w", encoding="utf-8") as f:
+        json.dump(packet, f, indent=2, default=str)
+    return p
+
+
+def save_compare_exec_summary_md(text: str, compare_dir: Path, tag: str, llm: bool = False) -> Path:
+    """Save compare exec summary markdown → compare_dir/exec_summary[_llm]_{tag}.md."""
+    _ensure_dir(compare_dir)
+    prefix = "exec_summary_llm" if llm else "exec_summary"
+    p = compare_dir / f"{prefix}_{tag}.md"
+    p.write_text(text, encoding="utf-8")
+    return p
+
+
 # ── Wind output helpers ──────────────────────────────────────────────────────
 
 

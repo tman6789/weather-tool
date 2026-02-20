@@ -37,6 +37,12 @@ ROLLING_COMPLETENESS_MIN_FRAC: float = 0.80
 ECON_WB_COVERAGE_MIN_FRAC: float = 0.90  # min wetbulb coverage for high-confidence econ flag
 FREEZE_CONFIDENCE_TEMP_AVAIL_MIN_FRAC: float = 0.90  # min temp availability for high-confidence freeze flag
 
+# Decision AI profiles
+DECISION_AI_PROFILES: tuple[str, ...] = ("datacenter", "economizer_first", "freeze_sensitive")
+DEATH_DAY_DEFAULT_WINDOW_HOURS: int = 24
+DEATH_DAY_DEFAULT_TOP_N: int = 5
+DEATH_DAY_STRESS_EPS: float = 1e-6   # zero-division guard in z-score normalization
+
 IEM_UNITS: dict[str, str] = {
     "tmpf": "F",
     "dwpf": "F",
@@ -107,6 +113,14 @@ class RunConfig:
     design_metric: str = "wetbulb_f"  # "temp" or "wetbulb_f"
     design_percentiles: list[float] = field(default_factory=lambda: [99.0, 99.6])
 
+    # Decision AI
+    decision_ai: bool = False
+    decision_profile: str = "datacenter"
+    death_day_window_hours: int = 24
+    death_day_top_n: int = 5
+    llm_exec_summary: bool = False
+    compare_packet_full: bool = False   # embed full per-station packets in compare_packet.json
+
     def validate(self) -> None:
         """Raise ValueError on invalid config combinations."""
         if self.mode == "csv" and self.input_path is None:
@@ -115,6 +129,20 @@ class RunConfig:
             raise ValueError("--station-id is required in iem mode")
         if self.start > self.end:
             raise ValueError(f"start ({self.start}) must be <= end ({self.end})")
+        if self.decision_ai:
+            if self.decision_profile not in DECISION_AI_PROFILES:
+                raise ValueError(
+                    f"decision_profile must be one of {DECISION_AI_PROFILES}; "
+                    f"got '{self.decision_profile}'"
+                )
+            if self.death_day_window_hours <= 0:
+                raise ValueError(
+                    f"death_day_window_hours must be > 0; got {self.death_day_window_hours}"
+                )
+            if self.death_day_top_n <= 0:
+                raise ValueError(
+                    f"death_day_top_n must be >= 1; got {self.death_day_top_n}"
+                )
 
     @property
     def file_tag(self) -> str:

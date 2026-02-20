@@ -22,6 +22,7 @@ class StationResult:
     cfg: RunConfig
     wind_results: dict[str, Any] | None = None
     design_day: pd.DataFrame | None = None
+    decision: dict[str, Any] | None = None   # populated when cfg.decision_ai is True
 
 
 def run_station_pipeline(cfg: RunConfig, echo: bool = False) -> StationResult:
@@ -180,6 +181,43 @@ def run_station_pipeline(cfg: RunConfig, echo: bool = False) -> StationResult:
                     }
                     _echo(f"    event {event_key}: {ev_stats['event_count']} events, {ev_stats['event_hours_total']} hrs")
 
+    # 4c. Decision AI (optional)
+    decision: dict[str, Any] | None = None
+    if cfg.decision_ai:
+        from weather_tool.insights.exec_summary import render_exec_summary_station
+        from weather_tool.insights.llm_exec_summary import generate_llm_exec_summary
+        from weather_tool.insights.packet import build_station_packet
+
+        _echo("  Building Decision AI packet...")
+        _partial_result = StationResult(
+            summary=summary,
+            windowed=windowed,
+            interval_info=interval_info,
+            quality_report={},
+            metadata={},
+            cfg=cfg,
+            wind_results=wind_results,
+            design_day=design_day_df,
+        )
+        packet = build_station_packet(
+            cfg=cfg,
+            result=_partial_result,
+            profile_name=cfg.decision_profile,
+            window_hours=cfg.death_day_window_hours,
+            top_n=cfg.death_day_top_n,
+        )
+        exec_md = render_exec_summary_station(packet)
+        llm_md: str | None = None
+        if cfg.llm_exec_summary:
+            _echo("  Generating LLM exec summary...")
+            llm_md = generate_llm_exec_summary(packet)
+        decision = {
+            "packet": packet,
+            "exec_summary_md": exec_md,
+            "llm_exec_summary_md": llm_md,
+        }
+        _echo("  Decision AI complete.")
+
     # 5. Build quality report + metadata
     _base_quality_cols = [
         "year", "missing_pct", "duplicate_count", "nan_temp_count",
@@ -232,4 +270,5 @@ def run_station_pipeline(cfg: RunConfig, echo: bool = False) -> StationResult:
         cfg=cfg,
         wind_results=wind_results,
         design_day=design_day_df,
+        decision=decision,
     )
