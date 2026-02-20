@@ -11,7 +11,25 @@ pip install -e ".[dev]"
 # Optional extras
 pip install -e ".[llm]"        # OpenAI LLM narrative (requires OPENAI_API_KEY)
 pip install -e ".[viz]"        # matplotlib wind rose PNGs
-pip install -e ".[streamlit]"  # Streamlit UI (not yet implemented)
+pip install -e ".[ui]"         # Streamlit UI dashboard
+
+# ── Streamlit UI ──────────────────────────────────────────────────────────────
+
+# Install UI extra
+pip install -e ".[ui]"
+
+# Run the dashboard
+streamlit run weather_tool/ui/app.py
+
+# Load an existing run folder (no pipeline re-run, no network needed)
+# → open sidebar → select "Load existing folder"
+# → enter path:  outputs/
+#     or a compare dir:  outputs/compare_2018-01-01_2023-12-31_3stations/
+# → click "Load"
+
+# Smoke-test: validate packet schema in a run folder
+python -m weather_tool.ui.check outputs/
+python -m weather_tool.ui.check "outputs/compare_2018-01-01_2023-12-31_3stations"
 
 # Run tests
 pytest -q
@@ -111,4 +129,4 @@ Tests live in `tests/` and use synthetic in-memory DataFrames (e.g., `pd.date_ra
 
 ### Remaining Roadmap
 
-Phase 4: **UI** — Streamlit dashboard for comparison (not yet started; `pip install -e ".[streamlit]"` extra is defined but the app does not exist yet).
+Phase 4: **UI** — Streamlit dashboard (Pass 1 complete). Entry point: `weather_tool/ui/app.py`. Pages: Compare, Station Detail, Wind, Exports. Service layer: `weather_tool/ui/backend.py`. Smoke validator: `python -m weather_tool.ui.check`. Install: `pip install -e ".[ui]"`.
