@@ -35,12 +35,12 @@ compare_csv = backend.load_compare_summary_csv(run_dir)
 col_t1, col_t2 = st.columns(2)
 
 with col_t1:
-    metric_axis = st.radio(
-        "Metric axis",
-        ["Tdb", "Twb", "Both"],
-        horizontal=True,
-        key="compare_metric_axis",
-        help="Which temperature axis to show in the exceedance hours plot",
+    chart_mode = st.selectbox(
+        "Chart mode",
+        ["Tower Stress", "Economizer"],
+        key="compare_chart_mode",
+        help="Tower Stress: WB hours above cooling tower thresholds (75 / 78 / 80 °F). "
+             "Economizer: dry-bulb free-cooling opportunity.",
     )
 
 with col_t2:
@@ -61,23 +61,30 @@ st.divider()
 
 st.header("Rankings")
 
+SCORE_LABEL_MAP = {
+    "overall_score":      "Overall",
+    "heat_score":         "Heat",
+    "moisture_score":     "Moisture",
+    "freeze_score":       "Freeze",
+    "data_quality_score": "Data Quality",
+}
+
 if compare_pkt and compare_pkt.get("rankings"):
     rankings = compare_pkt["rankings"]
-    # rankings is dict[score_type, list[{station_id, value, rank}]]
-    # packet.py:_extract_ranking emits "value" (not "score") — use ["value"]
-    frames = {}
-    for score_key, rows in rankings.items():
-        if isinstance(rows, list) and rows:
-            try:
-                frames[score_key] = (
-                    pd.DataFrame(rows)
-                    .set_index("station_id")["value"]
-                    .rename(score_key)
-                )
-            except KeyError:
-                pass
-    if frames:
-        rank_df = pd.concat(frames.values(), axis=1).reset_index()
+    score_frames = {}
+    for key, lbl in SCORE_LABEL_MAP.items():
+        rows = rankings.get(key, [])
+        if rows:
+            score_frames[lbl] = (
+                pd.DataFrame(rows)[["station_id", "value"]]
+                .rename(columns={"value": lbl})
+                .set_index("station_id")
+            )
+    if score_frames:
+        rank_df = pd.concat(score_frames.values(), axis=1).reset_index()
+        os_rank = {r["station_id"]: r["rank"] for r in rankings.get("overall_score", [])}
+        rank_df.insert(0, "Rank", rank_df["station_id"].map(os_rank))
+        rank_df = rank_df.sort_values("Rank").rename(columns={"station_id": "Station"})
         st.dataframe(rank_df, use_container_width=True)
     else:
         st.json(rankings)
@@ -86,7 +93,7 @@ elif compare_csv is not None:
     st.caption("(Decision AI not enabled — showing compare_summary.csv)")
     st.dataframe(compare_csv, use_container_width=True)
 
-elif packets:
+elif packets and len(packets) > 1:
     # Build a quick side-by-side key metrics table from individual packets
     rows = []
     for sid, pkt in packets.items():
@@ -120,7 +127,13 @@ summary_data: dict[str, object] = {
     sid: backend.load_summary_csv(run_dir, sid) for sid in sids_for_plot
 }
 
-plot_components.exceedance_hours_bar_chart(summary_data, metric_axis, norm_mode)
+plot_components.exceedance_hours_bar_chart(summary_data, chart_mode, norm_mode)
+
+with st.expander("🔍 Debug: plot data", expanded=False):
+    for sid, df in summary_data.items():
+        if df is not None and not df.empty:
+            st.caption(f"**{sid}**")
+            st.dataframe(df, use_container_width=True)
 
 st.divider()
 

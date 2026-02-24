@@ -54,6 +54,47 @@ def compute_rolling_max(
     return round(float(valid_means.max()), 2)
 
 
+def compute_rolling_window_max(
+    series: pd.Series,
+    timestamps: pd.Series,
+    window_hours: int,
+    dt_minutes: float,
+    min_frac: float = 0.80,
+) -> float:
+    """Max of rolling *window_hours*-h trailing MAX (peak-of-peak) with completeness guard.
+
+    Like compute_rolling_max() but the rolling aggregation uses .max() instead of
+    .mean(), returning the highest single value observed in any sufficiently complete
+    window.  min_frac=0.80 (non-strict): at least 80 % of window slots must be
+    populated; any window with fewer populated slots is NaN-dropped.
+    Returns NaN if dt_minutes is invalid, series is empty, or no window passes the
+    completeness threshold.
+    """
+    if math.isnan(dt_minutes) or dt_minutes <= 0 or len(series) == 0:
+        return float("nan")
+
+    valid = series.dropna()
+    if len(valid) == 0:
+        return float("nan")
+
+    indexed = pd.Series(series.values, index=pd.DatetimeIndex(timestamps.values))
+    indexed = indexed.sort_index()
+
+    dt_round = max(1, round(dt_minutes))
+    resampled = indexed.resample(f"{dt_round}min").mean()
+
+    n_steps = int(round(window_hours * 60.0 / dt_round))
+    if n_steps < 1:
+        return float("nan")
+    min_periods = max(1, int(min_frac * n_steps))
+
+    rolling_max = resampled.rolling(window=n_steps, min_periods=min_periods).max()
+    valid_max = rolling_max.dropna()
+    if len(valid_max) == 0:
+        return float("nan")
+    return round(float(valid_max.max()), 2)
+
+
 # ── Exceedance hours ─────────────────────────────────────────────────────────
 
 

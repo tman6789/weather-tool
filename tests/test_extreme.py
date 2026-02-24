@@ -12,6 +12,7 @@ from weather_tool.core.extreme import (
     compute_exceedance_hours,
     compute_extreme_yearly,
     compute_rolling_max,
+    compute_rolling_window_max,
 )
 
 
@@ -300,3 +301,99 @@ class TestExtremeInAggregate:
         assert "exceedance_hours_tdb_p99" in summary.columns
         # Values should be non-NaN for a good dataset
         assert summary["tdb_mean_24h_max"].notna().any()
+
+
+# ── compute_rolling_window_max ───────────────────────────────────────────────
+
+
+class TestComputeRollingWindowMax:
+    def test_peak_captured(self):
+        """Peak value inside a 6h window is returned even when most hours are lower."""
+        ts   = pd.Series(pd.date_range("2020-07-01", periods=24, freq="1h", tz="UTC"))
+        vals = pd.Series([70.0] * 12 + [80.0] + [70.0] * 11)
+        result = compute_rolling_window_max(vals, ts, window_hours=6, dt_minutes=60.0)
+        assert result == 80.0
+
+    def test_insufficient_data_returns_nan(self):
+        """Returns NaN when obs count is below min_periods in every window."""
+        ts   = pd.Series(pd.date_range("2020-07-01", periods=3, freq="1h", tz="UTC"))
+        vals = pd.Series([70.0, 72.0, 74.0])
+        # 6h window → n_steps=6; min_periods=int(0.8*6)=4; only 3 obs → all NaN
+        result = compute_rolling_window_max(vals, ts, window_hours=6, dt_minutes=60.0)
+        assert math.isnan(result)
+
+    def test_result_geq_rolling_mean(self):
+        """Rolling window max >= rolling window mean for the same window / data."""
+        ts   = pd.Series(pd.date_range("2020-07-01", periods=48, freq="1h", tz="UTC"))
+        vals = pd.Series([70.0 + i * 0.5 for i in range(48)])
+        mean_result = compute_rolling_max(vals, ts, window_hours=6, dt_minutes=60.0)
+        max_result  = compute_rolling_window_max(vals, ts, window_hours=6, dt_minutes=60.0)
+        assert not math.isnan(max_result)
+        assert max_result >= mean_result - 0.01  # max always >= mean
+
+
+class TestWb6hRollmaxInAggregate:
+    def test_column_present_with_wetbulb(self):
+        """wb_6h_rollmax_max_f appears in yearly summary when wet-bulb data is present
+        and is <= wb_max (point max is the upper bound for any window max)."""
+        from datetime import date
+
+        import numpy as np
+
+        from weather_tool.config import RunConfig
+        from weather_tool.core.aggregate import build_yearly_summary
+
+        cfg = RunConfig(
+            mode="csv",
+            station_id="TEST",
+            start=date(2020, 1, 1),
+            end=date(2020, 12, 31),
+            ref_temp=65.0,
+            fields=["tmpf", "dwpf", "relh"],
+        )
+
+        n    = 8760
+        ts   = pd.date_range("2020-01-01", periods=n, freq="1h", tz="UTC")
+        tmpf = 80.0 + 10.0 * np.sin(np.arange(n) * 2 * np.pi / (365 * 24))
+        relh = np.full(n, 60.0)
+        # Stull (2011) wet-bulb in Celsius, then convert to °F
+        t_c = (tmpf - 32.0) * 5.0 / 9.0
+        rh  = relh
+        twb_c = (
+            t_c * np.arctan(0.151977 * np.sqrt(rh + 8.313659))
+            + np.arctan(t_c + rh)
+            - np.arctan(rh - 1.676331)
+            + 0.00391838 * rh ** 1.5 * np.arctan(0.023101 * rh)
+            - 4.686035
+        )
+        wb = twb_c * 9.0 / 5.0 + 32.0
+
+        df = pd.DataFrame(
+            {
+                "timestamp":  ts,
+                "station_id": "TEST",
+                "temp":       tmpf,
+                "tmpf":       tmpf,
+                "relh":       relh,
+                "wetbulb_f":  wb,
+                "_is_dup":    False,
+            }
+        )
+
+        interval_info = {
+            "dt_minutes": 60.0,
+            "p10": 60.0,
+            "p90": 60.0,
+            "interval_change_flag": False,
+            "unique_diff_counts": {60: n - 1},
+            "interval_unknown_flag": False,
+        }
+        summary = build_yearly_summary(df, cfg, interval_info)
+
+        assert "wb_6h_rollmax_max_f" in summary.columns, "column missing from summary"
+        val    = summary.loc[summary["year"] == 2020, "wb_6h_rollmax_max_f"].iloc[0]
+        wb_max = summary.loc[summary["year"] == 2020, "wb_max"].iloc[0]
+        assert not math.isnan(val), f"expected non-NaN wb_6h_rollmax_max_f, got {val}"
+        assert val <= wb_max + 0.1, (
+            f"6h rollmax {val} implausibly exceeds point max {wb_max}"
+        )

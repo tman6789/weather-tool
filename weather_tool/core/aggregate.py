@@ -17,7 +17,7 @@ from weather_tool.config import (
     RunConfig,
 )
 from weather_tool.core.econ_tower import compute_econ_tower_yearly
-from weather_tool.core.extreme import compute_extreme_yearly
+from weather_tool.core.extreme import compute_extreme_yearly, compute_rolling_window_max
 from weather_tool.core.freeze import compute_freeze_yearly
 from weather_tool.core.metrics import hours_above_ref, infer_interval
 from weather_tool.core.quality import compute_quality
@@ -150,12 +150,17 @@ def build_yearly_summary(
                 wb_row["hours_wb_above_ref"] = round(
                     hours_above_ref(dedup["wetbulb_f"], cfg.ref_temp, effective_dt), 2
                 )
+                wb_row["wb_6h_rollmax_max_f"] = compute_rolling_window_max(
+                    dedup["wetbulb_f"], dedup["timestamp"], 6, effective_dt,
+                    ROLLING_COMPLETENESS_MIN_FRAC,
+                )
             else:
                 wb_row["wb_p99"] = None
                 wb_row["wb_p996"] = None
                 wb_row["wb_max"] = None
                 wb_row["wb_mean"] = None
                 wb_row["hours_wb_above_ref"] = 0.0
+                wb_row["wb_6h_rollmax_max_f"] = float("nan")
 
         # Economizer / tower metrics
         econ_row = compute_econ_tower_yearly(

@@ -43,14 +43,23 @@ def build_run_config_from_sidebar(
     start: date,
     end: date,
     ref_temp: float,
-    fields: list[str],
     profile: str,
-    decision_ai: bool,
     wind_rose: bool,
     outdir: Path,
 ) -> Any:
-    """Build and validate a RunConfig for a single station."""
+    """Build and validate a RunConfig for a single station.
+
+    ``fields`` and ``decision_ai`` are derived internally:
+    - fields: always tmpf/dwpf/relh; sknt+drct added automatically when wind_rose=True
+    - decision_ai: True when profile is not "None"
+    """
     from weather_tool.config import RunConfig
+
+    _fields = ["tmpf", "dwpf", "relh"]
+    if wind_rose:
+        _fields = _fields + ["sknt", "drct"]
+    _decision_ai    = profile != "None"
+    _actual_profile = profile if profile != "None" else "datacenter"
 
     cfg = RunConfig(
         mode="iem",
@@ -58,9 +67,9 @@ def build_run_config_from_sidebar(
         start=start,
         end=end,
         ref_temp=ref_temp,
-        fields=fields,
-        decision_ai=decision_ai,
-        decision_profile=profile,
+        fields=_fields,
+        decision_ai=_decision_ai,
+        decision_profile=_actual_profile,
         wind_rose=wind_rose,
         outdir=outdir,
     )
@@ -76,7 +85,6 @@ def run_pipeline_and_save(
     start: date,
     end: date,
     ref_temp: float,
-    fields: list[str],
     profile: str,
     decision_ai: bool,
     wind_rose: bool,
@@ -87,6 +95,7 @@ def run_pipeline_and_save(
     For a single station, returns str(outdir).
     For multiple stations, runs a full compare and returns str(compare_dir).
     Mirrors cli.py behaviour exactly (parquet, insights MD, compare report, etc.).
+    ``fields`` are derived by build_run_config_from_sidebar based on wind_rose.
     """
     import datetime as _dt
 
@@ -110,7 +119,7 @@ def run_pipeline_and_save(
     station_results = []
     for sid in station_ids:
         cfg = build_run_config_from_sidebar(
-            sid, start, end, ref_temp, fields, profile, decision_ai, wind_rose, outdir
+            sid, start, end, ref_temp, profile, wind_rose, outdir
         )
         result = run_station_pipeline(cfg, echo=False)
 
@@ -156,12 +165,14 @@ def run_pipeline_and_save(
 
     compare_df = build_compare_summary(station_results, [ref_temp])
 
+    _fields = station_results[0].cfg.fields if station_results else []
+
     report_md = generate_compare_report_md(
         compare_df=compare_df,
         stations=station_ids,
         window_start=start,
         window_end=end,
-        fields=fields,
+        fields=_fields,
         ref_temps=[ref_temp],
     )
 
@@ -174,7 +185,7 @@ def run_pipeline_and_save(
         "stations": station_ids,
         "window_start": str(start),
         "window_end": str(end),
-        "fields": fields,
+        "fields": _fields,
         "ref_temps": [ref_temp],
         "run_timestamp": str(_dt.datetime.now(tz=_dt.timezone.utc).isoformat()),
         "per_station_dt": {

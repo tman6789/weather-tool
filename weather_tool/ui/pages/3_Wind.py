@@ -31,8 +31,8 @@ wind_artifacts = backend.load_wind_artifacts(run_dir)
 if not wind_artifacts:
     st.info(
         "No wind outputs found in this run folder. "
-        "Re-run with **--wind-rose** (and include `sknt` and `drct` in `--fields`) "
-        "to generate wind rose data."
+        "Enable **Wind analysis** on the ⚙️ Run Setup page, or pass **--wind-rose** "
+        "on the CLI (sknt + drct are added automatically by the UI)."
     )
     st.stop()
 

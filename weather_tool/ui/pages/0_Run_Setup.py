@@ -6,6 +6,8 @@ and busts the loader cache. Other pages read from session_state only.
 
 from __future__ import annotations
 
+import datetime
+import uuid
 from datetime import date
 from pathlib import Path
 
@@ -15,6 +17,12 @@ from weather_tool.ui import backend
 
 st.title("⚙️ Run Setup")
 st.caption("Configure and launch the pipeline, or load an existing output folder.")
+
+
+def _display(sid: str) -> str:
+    """Show 'ORD' instead of 'KORD' for 4-char US ICAO codes (display only)."""
+    return sid[1:] if len(sid) == 4 and sid.startswith("K") else sid
+
 
 # ── Mode selector ──────────────────────────────────────────────────────────────
 
@@ -39,9 +47,22 @@ if run_mode == "Run pipeline":
         help="ICAO station codes, e.g. KORD,KPHX,KIAD",
     )
 
-    col_y1, col_y2 = st.columns(2)
-    year_start = col_y1.number_input("Start year", min_value=1990, max_value=2030, value=2018)
-    year_end = col_y2.number_input("End year", min_value=1990, max_value=2030, value=2023)
+    _end_yr = date.today().year - 1
+    time_range = st.radio(
+        "Time range",
+        ["Past 5 years", "Past 10 years", "Past 20 years", "Custom"],
+        horizontal=True,
+        index=1,   # default: Past 10
+        key="time_range_radio",
+    )
+    _n_map = {"Past 5 years": 5, "Past 10 years": 10, "Past 20 years": 20}
+    if time_range == "Custom":
+        col_y1, col_y2 = st.columns(2)
+        year_start = col_y1.number_input("Start year", min_value=1990, max_value=2030, value=2018)
+        year_end   = col_y2.number_input("End year",   min_value=1990, max_value=2030, value=_end_yr)
+    else:
+        year_end   = _end_yr
+        year_start = _end_yr - _n_map[time_range] + 1
 
     ref_temp = st.number_input(
         "Ref temp (°F)",
@@ -50,36 +71,17 @@ if run_mode == "Run pipeline":
         help="Reference temperature for hours-above-ref metric",
     )
 
-    fields = st.multiselect(
-        "IEM fields",
-        options=["tmpf", "dwpf", "relh", "sknt", "drct", "gust"],
-        default=["tmpf", "dwpf", "relh"],
-        help="Fields to request from IEM ASOS API. tmpf required; dwpf/relh enable wet-bulb.",
-    )
-
     profile = st.selectbox(
         "Decision profile",
-        options=["datacenter", "economizer_first", "freeze_sensitive"],
-        index=0,
-        help="Rules engine profile for risk flag evaluation",
+        options=["None", "datacenter", "economizer_first", "freeze_sensitive"],
+        index=1,   # default: datacenter
+        help="Rules engine profile for risk flag evaluation. 'None' disables Decision AI.",
     )
 
-    col_t1, col_t2 = st.columns(2)
-    decision_ai = col_t1.toggle(
-        "Decision AI",
-        value=True,
-        help="Build station packet and executive summary",
-    )
-    wind_rose = col_t2.toggle(
+    wind_rose = st.toggle(
         "Wind analysis",
         value=False,
-        help="Compute wind roses and co-occurrence events (requires sknt + drct fields; slow)",
-    )
-
-    outdir_str = st.text_input(
-        "Output folder",
-        value="outputs",
-        help="Relative or absolute path for output files",
+        help="Compute wind roses and co-occurrence events (sknt + drct added automatically; slow)",
     )
 
     st.divider()
@@ -90,11 +92,13 @@ if run_mode == "Run pipeline":
             st.error("Enter at least one station ID.")
         elif int(year_start) > int(year_end):
             st.error("Start year must be ≤ end year.")
-        elif not fields:
-            st.error("Select at least one IEM field (tmpf recommended).")
         else:
             start_date = date(int(year_start), 1, 1)
-            end_date = date(int(year_end), 12, 31)
+            end_date   = date(int(year_end), 12, 31)
+            decision_ai = profile != "None"
+            _ts  = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+            _uid = uuid.uuid4().hex[:6]
+            outdir = Path("outputs") / "ui_runs" / f"{_ts}_{_uid}"
             try:
                 with st.spinner(f"Running pipeline for {', '.join(sids)}..."):
                     out = backend.run_pipeline_and_save(
@@ -102,11 +106,10 @@ if run_mode == "Run pipeline":
                         start=start_date,
                         end=end_date,
                         ref_temp=float(ref_temp),
-                        fields=list(fields),
                         profile=str(profile),
-                        decision_ai=bool(decision_ai),
+                        decision_ai=decision_ai,
                         wind_rose=bool(wind_rose),
-                        outdir=Path(outdir_str),
+                        outdir=outdir,
                     )
                 # Bust cached loaders before writing session_state so stale data
                 # from a previous run into the same folder is not returned.
@@ -190,7 +193,7 @@ if "run_dir" in st.session_state:
 
     st.code(run_dir, language=None)
     if sids_display:
-        st.write(f"**Stations:** {', '.join(sids_display)}")
+        st.write(f"**Stations:** {', '.join(_display(s) for s in sids_display)}")
     if meta.get("start"):
         st.write(
             f"**Window:** {meta['start']} → {meta['end']} | "
