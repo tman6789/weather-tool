@@ -65,15 +65,20 @@ with tab_summary:
     else:
         # ── Coverage badge ──────────────────────────────────────────────────────
         if "missing_pct" in summary_df.columns:
-            avg_miss   = summary_df["missing_pct"].mean() * 100
-            worst_miss = summary_df["missing_pct"].max() * 100
-            n_years    = len(summary_df)
-            yr_range   = f"{int(summary_df['year'].min())} \u2013 {int(summary_df['year'].max())}"
-            color = "green" if avg_miss < 2 else ("orange" if avg_miss < 5 else "red")
-            st.markdown(
-                f"**Data coverage** \u2014 :{color}[avg missing: {avg_miss:.1f}%] | "
-                f"worst year: {worst_miss:.1f}% | {n_years} years ({yr_range})"
-            )
+            valid_miss = summary_df["missing_pct"].dropna()
+            if not valid_miss.empty:
+                worst_idx  = valid_miss.idxmax()
+                worst_year = int(summary_df.loc[worst_idx, "year"])
+                worst_miss = float(valid_miss.max()) * 100
+                avg_miss   = float(valid_miss.mean()) * 100
+                n_years    = len(summary_df)
+                yr_range   = f"{int(summary_df['year'].min())} \u2013 {int(summary_df['year'].max())}"
+                color = "green" if avg_miss < 2 else ("orange" if avg_miss < 5 else "red")
+                st.markdown(
+                    f"**Data coverage** \u2014 :{color}[avg missing: {avg_miss:.1f}%] | "
+                    f"worst year: {worst_year} ({worst_miss:.1f}%) | "
+                    f"{n_years} years ({yr_range})"
+                )
 
         # ── WB column preference (chart + extremes rollup) ──────────────────────
         wb_col   = "wb_6h_rollmax_max_f"
@@ -94,12 +99,23 @@ with tab_summary:
 
         annual_data: dict = {"Year": summary_df["year"].astype(int)}
 
-        if _col("n_unique_timestamps") is not None:
-            annual_data["Records"] = _col("n_unique_timestamps")
-        if _col("nan_temp_count") is not None:
-            annual_data["Missing Temp"] = _col("nan_temp_count")
-        if _col("missing_pct") is not None:
-            annual_data["Missing %"] = (_col("missing_pct") * 100).round(1)
+        COVERAGE_COLS = [
+            ("expected_hours", "Exp Hrs"),
+            ("observed_hours", "Obs Hrs"),
+            ("missing_hours",  "Missing Hrs"),
+        ]
+        for src, lbl in COVERAGE_COLS:
+            annual_data[lbl] = summary_df[src] if src in summary_df.columns else None
+
+        annual_data["Missing %"] = (
+            (summary_df["missing_pct"] * 100).round(1)
+            if "missing_pct" in summary_df.columns else None
+        )
+        annual_data["NaN Temp"] = (
+            summary_df["nan_temp_count"]
+            if "nan_temp_count" in summary_df.columns else None
+        )
+
         if _col("tmax") is not None:
             annual_data["Max DB (\u00b0F)"] = _col("tmax")
         if _col("tmin") is not None:
@@ -124,24 +140,24 @@ with tab_summary:
 
         rc1, rc2, rc3, rc4 = st.columns(4)
         with rc1:
-            if "n_unique_timestamps" in summary_df.columns:
-                st.metric("Total Records", f"{int(summary_df['n_unique_timestamps'].sum()):,}")
+            if "expected_hours" in summary_df.columns:
+                st.metric("Total Exp Hours", f"{int(summary_df['expected_hours'].sum()):,}")
         with rc2:
-            if "nan_temp_count" in summary_df.columns:
-                st.metric("Total Missing Temp", f"{int(summary_df['nan_temp_count'].sum()):,}")
+            if "observed_hours" in summary_df.columns:
+                st.metric("Total Obs Hours", f"{int(summary_df['observed_hours'].sum()):,}")
         with rc3:
-            if hrs_col in summary_df.columns:
-                st.metric("Total Hrs Above Ref", f"{summary_df[hrs_col].sum():,.1f}")
+            if "missing_hours" in summary_df.columns:
+                st.metric("Total Missing Hrs", f"{int(summary_df['missing_hours'].sum()):,}")
         with rc4:
-            if hrs_col in summary_df.columns and "total_hours_with_temp" in summary_df.columns:
-                denom = summary_df["total_hours_with_temp"].sum()
+            if "missing_hours" in summary_df.columns and "expected_hours" in summary_df.columns:
+                denom = int(summary_df["expected_hours"].sum())
                 if denom > 0:
-                    overall_pct = summary_df[hrs_col].sum() / denom * 100
-                    st.metric("Overall % Above", f"{overall_pct:.1f}%")
+                    pct = summary_df["missing_hours"].sum() / denom * 100
+                    st.metric("Overall % Missing", f"{pct:.1f}%")
                 else:
-                    st.metric("Overall % Above", "N/A")
+                    st.metric("Overall % Missing", "N/A")
             else:
-                st.metric("Overall % Above", "N/A")
+                st.metric("Overall % Missing", "N/A")
 
         ex1, ex2, ex3 = st.columns(3)
         with ex1:
